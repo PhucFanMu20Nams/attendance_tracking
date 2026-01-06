@@ -3,7 +3,9 @@ import * as authService from '../services/authService.js';
 /** POST /api/auth/login */
 export const login = async (req, res) => {
   try {
-    const { identifier, password } = req.body;
+    
+    const body = req.body || {};
+    const { identifier, password } = body;
 
     if (!identifier || typeof identifier !== 'string') {
       return res.status(400).json({ message: 'Identifier (email or username) is required' });

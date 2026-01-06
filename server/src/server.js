@@ -3,7 +3,12 @@ import 'dotenv/config';
 import app from './app.js';
 import connectDB from './config/db.js';
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT;
+
+if (!PORT) {
+  console.error('PORT is not defined in .env');
+  process.exit(1);
+}
 
 // Connect to MongoDB first, then start server
 // Pattern: DB must be ready before accepting HTTP requests
