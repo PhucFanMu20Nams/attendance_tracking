@@ -1,0 +1,247 @@
+# 4-Day Roadmap — Attendance Web App (MERN) (MVP v2.1)
+
+> **Goal:** Ship a working MVP in **4 days** (beginner-friendly).  
+> **Strategy:** Build **Backend + DB first**, then a minimal Frontend that consumes the API.  
+> **Non-goals:** Pretty UI, realtime, anti-fraud, complex shifts.
+
+---
+
+## What you will deliver by Day 4
+✅ Login (JWT)  
+✅ Check-in / Check-out  
+✅ Monthly “My Attendance” history  
+✅ Requests (create) + Approvals (approve/reject)  
+✅ Timesheet Matrix (team/company)  
+✅ Monthly report + Excel export (.xlsx)  
+✅ Seed data for quick testing
+
+---
+
+## Project Setup Assumptions
+- Repo structure: `/server` (Express) + `/client` (React)
+- MongoDB: Local or Atlas
+- Timezone: **Asia/Ho_Chi_Minh (GMT+7)**
+- Shift: **08:30–17:30**
+- Lunch deduction: deduct 60 mins if span 12:00–13:00
+- Status is **computed** (not stored)
+
+---
+
+# Day 1 — Backend Foundation (Setup + Auth + DB + Seed)
+
+## Day 1 Goals
+- Backend runs and connects to MongoDB
+- JWT auth works (`/login`, `/me`)
+- Seed accounts ready for testing
+
+## Tasks (Server)
+1) **Initialize server**
+- Create Express app + `/api/health`
+- Add middleware: `cors`, `express.json()`
+- Connect MongoDB (`MONGO_URI`)
+
+2) **Create User model**
+- Fields: employeeCode, name, email, username(optional), passwordHash, role, teamId(optional), isActive
+- Roles: `ADMIN`, `MANAGER`, `EMPLOYEE`
+
+3) **Auth APIs**
+- `POST /api/auth/login`
+  - identifier (email/username) + password
+  - return JWT + user profile
+- `GET /api/auth/me`
+  - verify token, return current user
+
+4) **Auth middleware**
+- `authMiddleware`: verify JWT
+- `requireRole([...])`: block unauthorized roles
+
+5) **Seed data**
+- Create 1 team
+- Create 3 users:
+  - Admin (ADMIN)
+  - Manager (MANAGER, teamId)
+  - Employee (EMPLOYEE, teamId)
+
+## Done Checklist (Day 1)
+- [ ] `GET /api/health` returns OK
+- [ ] DB connection works
+- [ ] Login returns token
+- [ ] `/auth/me` returns correct user
+- [ ] Role guard blocks restricted routes
+- [ ] Seed users exist in DB and you can login with them
+
+## Commit Suggestion
+- `feat(server): setup express + mongo + auth + seed`
+
+---
+
+# Day 2 — Attendance Core APIs (Check-in/out + History + Status/Minutes)
+
+## Day 2 Goals
+- Check-in/out flows work correctly
+- Monthly history returns computed fields (status, minutes)
+
+## Tasks (Server)
+1) **Create Attendance model**
+- Fields: userId, date("YYYY-MM-DD"), checkInAt(Date), checkOutAt(Date|null), otApproved(bool default false)
+- Unique index: `(userId, date)`
+
+2) **Create GMT+7 dateKey helper**
+- Utility: `dateKey = YYYY-MM-DD` based on Asia/Ho_Chi_Minh
+
+3) **Attendance APIs**
+- `POST /api/attendance/check-in`
+  - must be logged in
+  - create/upsert today attendance
+  - block if already checked in
+- `POST /api/attendance/check-out`
+  - must be logged in
+  - block if no check-in
+  - block if already checked out
+- `GET /api/attendance/me?month=YYYY-MM`
+  - returns list with computed: `status`, `lateMinutes`, `workMinutes`, `otMinutes`
+
+4) **Implement compute logic (core)**
+- Status rules:
+  - today + in not null + out null => WORKING
+  - past day + in not null + out null => MISSING_CHECKOUT
+  - past day + no record => ABSENT (workdays only)
+- Minutes rules:
+  - lateMinutes if check-in after 08:45
+  - early leave if check-out before 17:30 (status affects UI)
+  - otMinutes if check-out after 18:30
+  - lunch deduction: -60 mins if span 12:00–13:00
+
+## Done Checklist (Day 2)
+- [ ] Check-in works and blocks duplicates
+- [ ] Check-out works and blocks invalid states
+- [ ] `/attendance/me` returns computed fields
+- [ ] WORKING vs MISSING_CHECKOUT is correct
+- [ ] Late / workMinutes / otMinutes calculations look correct for test data
+
+## Quick Manual Tests (Postman)
+- [ ] check-out before check-in => error
+- [ ] check-in twice => error
+- [ ] today check-in no check-out => WORKING
+- [ ] insert past-day check-in only => MISSING_CHECKOUT
+
+## Commit Suggestion
+- `feat(server): attendance check-in/out + monthly history + compute logic`
+
+---
+
+# Day 3 — Requests + Approvals + Timesheet Matrix + Report JSON
+
+## Day 3 Goals
+- Employee can create request
+- Manager/Admin can approve/reject request
+- Timesheet matrix API works
+- Monthly report (JSON) works
+
+## Tasks (Server)
+1) **Create Request model**
+- Fields: userId, date, type("ADJUST_TIME"), requestedCheckInAt, requestedCheckOutAt, reason, status(PENDING/APPROVED/REJECTED), approvedBy, approvedAt
+
+2) **Request APIs**
+- `POST /api/requests` (employee creates)
+- `GET /api/requests/me`
+- `GET /api/requests/pending` (manager/admin)
+  - Manager: only team users
+  - Admin: company-wide
+- `POST /api/requests/:id/approve`
+  - set status APPROVED
+  - update/create attendance for that date
+- `POST /api/requests/:id/reject`
+  - set status REJECTED
+
+3) **Timesheet Matrix APIs**
+- `GET /api/timesheet/team?month=YYYY-MM` (manager/admin)
+- `GET /api/timesheet/company?month=YYYY-MM` (admin)
+Return shape:
+- days: [1..N]
+- rows: [{ user, cells: [{date, status, colorKey}] }]
+
+4) **Monthly Report (JSON)**
+- `GET /api/reports/monthly?month=YYYY-MM&scope=team|company&teamId?`
+Return summary per user:
+- totalWorkMinutes
+- totalLateCount
+- totalOtMinutes
+
+## Done Checklist (Day 3)
+- [ ] Employee can create request
+- [ ] Manager/Admin can approve and attendance updates correctly
+- [ ] Pending list respects scope (team/company)
+- [ ] Timesheet matrix returns correct shape for selected month
+- [ ] Monthly report JSON is correct and matches attendance data
+
+## Commit Suggestion
+- `feat(server): requests + approvals + timesheet matrix + monthly report json`
+
+---
+
+# Day 4 — Excel Export + Minimal Frontend (Must-Have UI)
+
+## Day 4 Goals
+- Excel export works
+- Minimal UI to demo end-to-end
+- Final manual test pass
+
+## Tasks (Server)
+1) **Excel export endpoint**
+- `GET /api/reports/monthly/export?month=YYYY-MM&scope=team|company&teamId?`
+- Generate `.xlsx` (use `exceljs`)
+- Include columns (simple):
+  - employeeCode, name, totalWorkMinutes, totalLateCount, totalOtMinutes
+
+## Tasks (Client)
+> Keep UI very simple: tables + forms, minimal styling.
+
+1) **Frontend skeleton**
+- Routing + layout
+- Auth context (store token, load `/auth/me`)
+- Axios client (attach token)
+
+2) **Pages (minimum)**
+- `/login`
+- `/dashboard` (check-in/out + today status)
+- `/my-attendance` (monthly list table)
+- `/requests` (create + list)
+- `/approvals` (pending list + approve/reject) (manager/admin only)
+- `/timesheet-matrix` (render matrix) (manager/admin)
+- `/reports/monthly` (view summary + export button)
+
+3) **Export Excel**
+- Button triggers download from export endpoint
+
+## Final Manual Tests (Day 4)
+- [ ] Login works + route protected
+- [ ] Check-in/out works from UI
+- [ ] My Attendance shows correct computed fields
+- [ ] Create request + approve updates attendance
+- [ ] Matrix renders without crashing
+- [ ] Report page loads + export downloads valid .xlsx
+- [ ] Run through TEST_CHECKLIST.md and tick everything important
+
+## Commit Suggestion
+- `feat(client): minimal ui + integrate apis`
+- `feat(server): excel export`
+
+---
+
+# Minimal “Cut Scope” Plan (If you’re behind schedule)
+If time is tight on Day 4, cut in this order:
+1) Admin Users page (skip UI, use seed only)
+2) Holidays UI (skip, treat weekends only)
+3) Company scope (admin) — keep team scope only
+4) Make Matrix simple (status text only, colors later)
+
+---
+
+# Success Criteria (4-day MVP)
+- Backend endpoints work and match API_SPEC.md
+- Frontend can demonstrate:
+  - login → check-in/out → history → request → approve → report export
+- Most important: status logic WORKING vs MISSING_CHECKOUT is correct
+
+---

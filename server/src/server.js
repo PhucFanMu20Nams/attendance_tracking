@@ -1,0 +1,18 @@
+// Load environment variables from .env file FIRST (before any other imports use them)
+import 'dotenv/config';
+import app from './app.js';
+import connectDB from './config/db.js';
+
+const PORT = process.env.PORT || 5000;
+
+// Connect to MongoDB first, then start server
+// Pattern: DB must be ready before accepting HTTP requests
+connectDB()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => {
+    // If DB fails, exit immediately - server can't work without database
+    console.error('Failed to connect DB:', err.message);
+    process.exit(1);
+  });
