@@ -25,7 +25,7 @@ const userSchema = new mongoose.Schema(
     username: {
       type: String,
       unique: true,
-      sparse: true, // Allow multiple null values while keeping unique constraint
+      sparse: true,
       trim: true
     },
     passwordHash: {
