@@ -100,6 +100,8 @@ Response:
 Roles: MANAGER | ADMIN
 
 Behavior:
+- MANAGER: Can only approve requests from users in the same team
+- ADMIN: Can approve any request across the company
 - Update request status = APPROVED
 - Update attendance based on request:
   - If attendance does not exist → create
@@ -113,6 +115,8 @@ Response:
 Roles: MANAGER | ADMIN
 
 Behavior:
+- MANAGER: Can only reject requests from users in the same team
+- ADMIN: Can reject any request across the company
 - Update request status = REJECTED
 - Set approvedBy (rejector) and approvedAt
 
