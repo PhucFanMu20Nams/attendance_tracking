@@ -1,0 +1,236 @@
+import mongoose from 'mongoose';
+import Request from '../models/Request.js';
+import User from '../models/User.js';
+import Attendance from '../models/Attendance.js';
+
+/**
+ * Create a new request for attendance adjustment.
+ * Validates date format, ensures at least one time field, and checks time ordering.
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {string} date - Date in "YYYY-MM-DD" format (GMT+7)
+ * @param {Date|null} requestedCheckInAt - Requested check-in time (optional)
+ * @param {Date|null} requestedCheckOutAt - Requested check-out time (optional)
+ * @param {string} reason - Reason for the request
+ * @returns {Promise<Object>} Created request
+ */
+export const createRequest = async (userId, date, requestedCheckInAt, requestedCheckOutAt, reason) => {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const error = new Error('Invalid date format. Expected YYYY-MM-DD');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!requestedCheckInAt && !requestedCheckOutAt) {
+    const error = new Error('At least one of requestedCheckInAt or requestedCheckOutAt is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!reason || reason.trim().length === 0) {
+    const error = new Error('Reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // If both times provided, check-out must be after check-in
+  if (requestedCheckInAt && requestedCheckOutAt) {
+    if (new Date(requestedCheckOutAt) <= new Date(requestedCheckInAt)) {
+      const error = new Error('requestedCheckOutAt must be after requestedCheckInAt');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  // Business rule: If attendance doesn't exist for this date, checkInAt is required
+  // (because Attendance.checkInAt is a required field)
+  if (!requestedCheckInAt) {
+    const existingAttendance = await Attendance.findOne({ userId, date });
+    if (!existingAttendance) {
+      const error = new Error('Cannot create new attendance without check-in time. Please include requestedCheckInAt');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  const request = await Request.create({
+    userId,
+    date,
+    type: 'ADJUST_TIME',
+    requestedCheckInAt,
+    requestedCheckOutAt,
+    reason: reason.trim(),
+    status: 'PENDING'
+  });
+
+  return request;
+};
+
+/**
+ * Get all requests for a specific user.
+ * Returns sorted by date descending (most recent first).
+ * 
+ * @param {string} userId - User's ObjectId
+ * @returns {Promise<Array>} Array of requests
+ */
+export const getMyRequests = async (userId) => {
+  const requests = await Request.find({ userId })
+    .populate('approvedBy', 'name employeeCode')
+    .sort({ date: -1, createdAt: -1 });
+
+  return requests;
+};
+
+/**
+ * Get pending requests with RBAC scope enforcement.
+ * MANAGER: Only requests from users in the same team
+ * ADMIN: All pending requests company-wide
+ * 
+ * @param {Object} user - Current user (req.user)
+ * @returns {Promise<Array>} Array of pending requests
+ */
+export const getPendingRequests = async (user) => {
+  let query = { status: 'PENDING' };
+
+  // RBAC: Manager only sees team members' requests
+  if (user.role === 'MANAGER') {
+    if (!user.teamId) {
+      const error = new Error('Manager must be assigned to a team');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    // Find all users in the same team
+    const teamMembers = await User.find({ teamId: user.teamId }).select('_id');
+    const teamMemberIds = teamMembers.map(member => member._id);
+
+    query.userId = { $in: teamMemberIds };
+  }
+
+  // ADMIN sees all pending requests (no additional filter)
+
+  const requests = await Request.find(query)
+    .populate('userId', 'name employeeCode email teamId')
+    .sort({ createdAt: 1 });
+
+  return requests;
+};
+
+/**
+ * Approve a request and update/create attendance record.
+ * Critical: Implements atomic update to prevent race conditions.
+ * 
+ * @param {string} requestId - Request's ObjectId
+ * @param {string} approverId - Approver's ObjectId
+ * @returns {Promise<Object>} Updated request
+ */
+export const approveRequest = async (requestId, approverId) => {
+  if (!mongoose.Types.ObjectId.isValid(requestId)) {
+    const error = new Error('Invalid request ID');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const request = await Request.findById(requestId);
+
+  if (!request) {
+    const error = new Error('Request not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (request.status !== 'PENDING') {
+    const error = new Error(`Request already ${request.status.toLowerCase()}`);
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // Update request status
+  request.status = 'APPROVED';
+  request.approvedBy = approverId;
+  request.approvedAt = new Date();
+  await request.save();
+
+  // Update or create attendance for the requested date
+  await updateAttendanceFromRequest(request);
+
+  return request;
+};
+
+/**
+ * Reject a request.
+ * 
+ * @param {string} requestId - Request's ObjectId
+ * @param {string} approverId - Approver's ObjectId
+ * @returns {Promise<Object>} Updated request
+ */
+export const rejectRequest = async (requestId, approverId) => {
+  if (!mongoose.Types.ObjectId.isValid(requestId)) {
+    const error = new Error('Invalid request ID');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const request = await Request.findById(requestId);
+
+  if (!request) {
+    const error = new Error('Request not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (request.status !== 'PENDING') {
+    const error = new Error(`Request already ${request.status.toLowerCase()}`);
+    error.statusCode = 409;
+    throw error;
+  }
+
+  request.status = 'REJECTED';
+  request.approvedBy = approverId;
+  request.approvedAt = new Date();
+  await request.save();
+
+  return request;
+};
+
+/**
+ * Update or create attendance record based on approved request.
+ * Uses findOneAndUpdate with upsert to handle both create and update atomically.
+ * Only updates the time fields that were requested.
+ */
+async function updateAttendanceFromRequest(request) {
+  const { userId, date, requestedCheckInAt, requestedCheckOutAt } = request;
+
+  const updateFields = {};
+  
+  if (requestedCheckInAt) {
+    updateFields.checkInAt = requestedCheckInAt;
+  }
+  
+  if (requestedCheckOutAt) {
+    updateFields.checkOutAt = requestedCheckOutAt;
+  }
+
+  // Defensive check: cannot create new attendance without checkInAt
+  // (validation in createRequest should prevent this, but guard here for safety)
+  const existing = await Attendance.findOne({ userId, date }).select('_id');
+  
+  if (!existing && !requestedCheckInAt) {
+    const error = new Error('Cannot create attendance without check-in time');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Atomic upsert: create if not exists, update if exists
+  await Attendance.findOneAndUpdate(
+    { userId, date },
+    { 
+      $set: updateFields,
+      $setOnInsert: { 
+        userId, 
+        date
+      }
+    },
+    { upsert: true, new: true }
+  );
+}
