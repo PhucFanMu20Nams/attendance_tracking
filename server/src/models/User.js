@@ -54,6 +54,14 @@ const userSchema = new mongoose.Schema(
   }
 );
 
+// Remove passwordHash in convert to JSON (API response)
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.passwordHash;
+  delete obj.__v;
+  return obj;
+};
+
 // Export ROLES constant for use in other files (e.g., validation, seed)
 export { ROLES };
 export default mongoose.model('User', userSchema);
