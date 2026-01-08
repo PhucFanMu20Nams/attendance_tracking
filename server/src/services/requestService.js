@@ -119,19 +119,22 @@ export const getPendingRequests = async (user) => {
 /**
  * Approve a request and update/create attendance record.
  * Critical: Implements atomic update to prevent race conditions.
+ * RBAC: MANAGER can only approve requests from users in the same team.
+ *       ADMIN can approve any request across the company.
  * 
  * @param {string} requestId - Request's ObjectId
- * @param {string} approverId - Approver's ObjectId
+ * @param {Object} approver - Approver user object (req.user)
  * @returns {Promise<Object>} Updated request
  */
-export const approveRequest = async (requestId, approverId) => {
+export const approveRequest = async (requestId, approver) => {
   if (!mongoose.Types.ObjectId.isValid(requestId)) {
     const error = new Error('Invalid request ID');
     error.statusCode = 400;
     throw error;
   }
 
-  const request = await Request.findById(requestId);
+  const request = await Request.findById(requestId)
+    .populate('userId', 'teamId');
 
   if (!request) {
     const error = new Error('Request not found');
@@ -145,9 +148,31 @@ export const approveRequest = async (requestId, approverId) => {
     throw error;
   }
 
+  // IDOR Check: Manager can only approve requests from their team
+  if (approver.role === 'MANAGER') {
+    if (!approver.teamId) {
+      const error = new Error('Manager must be assigned to a team');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (!request.userId.teamId) {
+      const error = new Error('Request user is not assigned to any team');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (!approver.teamId.equals(request.userId.teamId)) {
+      const error = new Error('You can only approve requests from your team');
+      error.statusCode = 403;
+      throw error;
+    }
+  }
+  // Admin can approve any request (no additional check needed)
+
   // Update request status
   request.status = 'APPROVED';
-  request.approvedBy = approverId;
+  request.approvedBy = approver._id;
   request.approvedAt = new Date();
   await request.save();
 
@@ -159,19 +184,22 @@ export const approveRequest = async (requestId, approverId) => {
 
 /**
  * Reject a request.
+ * RBAC: MANAGER can only reject requests from users in the same team.
+ *       ADMIN can reject any request across the company.
  * 
  * @param {string} requestId - Request's ObjectId
- * @param {string} approverId - Approver's ObjectId
+ * @param {Object} approver - Approver user object (req.user)
  * @returns {Promise<Object>} Updated request
  */
-export const rejectRequest = async (requestId, approverId) => {
+export const rejectRequest = async (requestId, approver) => {
   if (!mongoose.Types.ObjectId.isValid(requestId)) {
     const error = new Error('Invalid request ID');
     error.statusCode = 400;
     throw error;
   }
 
-  const request = await Request.findById(requestId);
+  const request = await Request.findById(requestId)
+    .populate('userId', 'teamId');
 
   if (!request) {
     const error = new Error('Request not found');
@@ -185,8 +213,30 @@ export const rejectRequest = async (requestId, approverId) => {
     throw error;
   }
 
+  // IDOR Check: Manager can only reject requests from their team
+  if (approver.role === 'MANAGER') {
+    if (!approver.teamId) {
+      const error = new Error('Manager must be assigned to a team');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (!request.userId.teamId) {
+      const error = new Error('Request user is not assigned to any team');
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (!approver.teamId.equals(request.userId.teamId)) {
+      const error = new Error('You can only reject requests from your team');
+      error.statusCode = 403;
+      throw error;
+    }
+  }
+  // Admin can reject any request (no additional check needed)
+
   request.status = 'REJECTED';
-  request.approvedBy = approverId;
+  request.approvedBy = approver._id;
   request.approvedAt = new Date();
   await request.save();
 
@@ -202,11 +252,11 @@ async function updateAttendanceFromRequest(request) {
   const { userId, date, requestedCheckInAt, requestedCheckOutAt } = request;
 
   const updateFields = {};
-  
+
   if (requestedCheckInAt) {
     updateFields.checkInAt = requestedCheckInAt;
   }
-  
+
   if (requestedCheckOutAt) {
     updateFields.checkOutAt = requestedCheckOutAt;
   }
@@ -214,7 +264,7 @@ async function updateAttendanceFromRequest(request) {
   // Defensive check: cannot create new attendance without checkInAt
   // (validation in createRequest should prevent this, but guard here for safety)
   const existing = await Attendance.findOne({ userId, date }).select('_id');
-  
+
   if (!existing && !requestedCheckInAt) {
     const error = new Error('Cannot create attendance without check-in time');
     error.statusCode = 400;
@@ -224,10 +274,10 @@ async function updateAttendanceFromRequest(request) {
   // Atomic upsert: create if not exists, update if exists
   await Attendance.findOneAndUpdate(
     { userId, date },
-    { 
+    {
       $set: updateFields,
-      $setOnInsert: { 
-        userId, 
+      $setOnInsert: {
+        userId,
         date
       }
     },
