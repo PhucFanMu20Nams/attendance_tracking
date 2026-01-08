@@ -85,13 +85,13 @@ export const getPendingRequests = async (req, res) => {
 export const approveRequest = async (req, res) => {
   try {
     const requestId = req.params.id;
-    const approverId = req.user._id;
+    const approver = req.user;
 
     if (!requestId) {
       return res.status(400).json({ message: 'Request ID is required' });
     }
 
-    const request = await requestService.approveRequest(requestId, approverId);
+    const request = await requestService.approveRequest(requestId, approver);
 
     return res.status(200).json({
       request
@@ -111,13 +111,13 @@ export const approveRequest = async (req, res) => {
 export const rejectRequest = async (req, res) => {
   try {
     const requestId = req.params.id;
-    const approverId = req.user._id;
+    const approver = req.user;
 
     if (!requestId) {
       return res.status(400).json({ message: 'Request ID is required' });
     }
 
-    const request = await requestService.rejectRequest(requestId, approverId);
+    const request = await requestService.rejectRequest(requestId, approver);
 
     return res.status(200).json({
       request
