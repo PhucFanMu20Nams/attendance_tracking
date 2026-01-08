@@ -112,8 +112,9 @@ Response:
 ### POST /requests/:id/reject
 Roles: MANAGER | ADMIN
 
-Request body:
-- reason (optional)
+Behavior:
+- Update request status = REJECTED
+- Set approvedBy (rejector) and approvedAt
 
 Response:
 - request: { ...updated... }

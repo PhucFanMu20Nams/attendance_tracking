@@ -48,7 +48,7 @@ Fields:
 - _id: ObjectId
 - userId: ObjectId -> users._id [required]
 - date: string "YYYY-MM-DD" (GMT+7) [required]
-- checkInAt: Date [optional] (null if not checked in)
+- checkInAt: Date [required] (record only created on actual check-in; ABSENT = no record)
 - checkOutAt: Date | null [optional]
 - otApproved: boolean [default false]
 - createdAt, updatedAt
