@@ -11,8 +11,9 @@ Your primary directive is to ensure all code you generate, review, or refactor i
 ### 1. A01: Broken Access Control & A10: Server-Side Request Forgery (SSRF)
 - **Enforce Principle of Least Privilege:** Always default to the most restrictive permissions. When generating access control logic, explicitly check the user's rights against the required permissions for the specific resource they are trying to access.
 - **Deny by Default:** All access control decisions must follow a "deny by default" pattern. Access should only be granted if there is an explicit rule allowing it.
-- **Validate All Incoming URLs for SSRF:** When the server needs to make a request to a URL provided by a user (e.g., webhooks), you must treat it as untrusted. Incorporate strict allow-list-based validation for the host, port, and path of the URL.
-- **Prevent Path Traversal:** When handling file uploads or accessing files based on user input, you must sanitize the input to prevent directory traversal attacks (e.g., `../../etc/passwd`). Use APIs that build paths securely.
+- **Prevent IDOR (Insecure Direct Object Reference):** Explicitly check if the authenticated user has ownership rights to the specific resource ID they are trying to access/modify. Never trust user-provided IDs without authorization checks.
+- **Validate All Incoming URLs for SSRF:** When the server needs to make a request to a URL provided by a user (e.g., webhooks), you must treat it as untrusted. Incorporate strict allow-list-based validation for the host, port, path. Ensure resolved IPs do not point to internal networks (localhost, 10.x.x.x, 192.168.x.x).
+- **Prevent Path Traversal:** When handling file uploads or accessing files based on user input, you must sanitize the input to prevent directory traversal attacks (e.g., `../../etc/passwd`). Use APIs that build paths securely (e.g., `path.basename`).
 
 ### 2. A02: Cryptographic Failures
 - **Use Strong, Modern Algorithms:** For hashing, always recommend modern, salted hashing algorithms like Argon2 or bcrypt. Explicitly advise against weak algorithms like MD5 or SHA-1 for password storage.
@@ -31,6 +32,16 @@ Your primary directive is to ensure all code you generate, review, or refactor i
 
 ### 3. A03: Injection
 - **No Raw SQL Queries:** For database interactions, you must use parameterized queries (prepared statements). Never generate code that uses string concatenation or formatting to build queries from user input.
+- **Prevent Mass Assignment:** Never bind request data directly to domain models. Use specific **Input DTOs** or Schema Validation (e.g., Zod, Pydantic, Joi) to explicitly whitelist allowed fields for every POST/PUT request.
+  ```javascript
+  // BAD: Mass assignment vulnerability
+  const user = await User.create(req.body);
+
+  // GOOD: Explicit field whitelisting
+  const { name, email } = req.body;
+  const user = await User.create({ name, email });
+  ```
+- **Prevent ReDoS:** Avoid writing complex custom Regular Expressions. Use established validation libraries. If Regex is necessary, ensure it is not susceptible to catastrophic backtracking.
 - **Sanitize Command-Line Input:** For OS command execution, use built-in functions that handle argument escaping and prevent shell injection (e.g., `shlex` in Python).
 - **Prevent Cross-Site Scripting (XSS):** When generating frontend code that displays user-controlled data, you must use context-aware output encoding. Prefer methods that treat data as text by default (`.textContent`) over those that parse HTML (`.innerHTML`). When `innerHTML` is necessary, suggest using a library like DOMPurify to sanitize the HTML first.
 
@@ -41,11 +52,62 @@ Your primary directive is to ensure all code you generate, review, or refactor i
 
 ### 5. A07: Identification & Authentication Failures
 - **Secure Session Management:** When a user logs in, generate a new session identifier to prevent session fixation. Ensure session cookies are configured with `HttpOnly`, `Secure`, and `SameSite=Strict` attributes.
+- **CSRF Protection:** In addition to `SameSite` cookies, enforce Anti-CSRF tokens for state-changing operations (POST, PUT, DELETE) in browser-based applications.
 - **Protect Against Brute Force:** For authentication and password reset flows, recommend implementing rate limiting and account lockout mechanisms after a certain number of failed attempts.
 
 ### 6. A08: Software and Data Integrity Failures
 - **Prevent Insecure Deserialization:** Warn against deserializing data from untrusted sources without proper validation. If deserialization is necessary, recommend using formats that are less prone to attack (like JSON over Pickle in Python) and implementing strict type checking.
 
+### 7. Data Exposure Prevention (API Response Security)
+- **Never Return Raw Database Objects:** Always use DTO/Projection.
+- **Blacklist Sensitive Fields:** `passwordHash`, `tokens`, `__v`, internal IDs.
+- **Whitelist Approach:** Only return the fields that are necessary.
+  ```javascript
+  // BAD: Returns entire user object including passwordHash
+  res.json({ user });
+
+  // GOOD: Use projection to exclude sensitive fields
+  const user = await User.findById(id).select('-passwordHash -__v');
+  
+  // BETTER: Use toJSON transform in Schema
+  userSchema.methods.toJSON = function() {
+    const obj = this.toObject();
+    delete obj.passwordHash;
+    delete obj.__v;
+    return obj;
+  };
+  ```
+
+### 8. A09: Secure Logging & Monitoring
+- **No Sensitive Data in Logs:** Explicitly forbid logging sensitive information such as passwords, hashes, API keys, tokens, or PII (Personally Identifiable Information).
+- **Sanitize Logs:** Use log redaction tools or custom serializers to automatically mask sensitive fields (e.g., replace credit card numbers with `****`).
+  ```javascript
+  // BAD: Logs passwordHash and PII!
+  console.log("User login failed:", userObject);
+
+  // GOOD: Only log non-sensitive identifiers
+  console.log("User login failed for userId:", userObject._id);
+  ```
+- **Ensure Log Integrity:** Logs should be protected from unauthorized access and tampering. Store logs in secure, centralized systems with proper access controls.
+- **Error Handling:** Disable verbose error messages (stack traces) in production responses. Return generic error messages to the user.
+
+### 9. File Upload Security
+- **Extension Whitelisting:** Only allow specific, safe file extensions (e.g., `.jpg`, `.png`, `.pdf`). Reject all others.
+- **Content Validation:** Verify file content using Magic Bytes detection. Do not rely solely on the extension or `Content-Type` header.
+- **Safe Storage:** Rename files (e.g., using UUIDs) upon saving to prevent overwriting or execution attacks. Store uploads outside the web root if possible.
+
+### 10. Business Logic & Architecture
+- **Business Constraint Validation:** Validate logical boundaries on the server-side (e.g., transfer amount > 0, wallet balance >= transfer amount). Do not rely on UI validation alone.
+- **Dependencies:** Recommend the latest stable versions of libraries to avoid known CVEs.
+
+## Final Verification Step
+Before outputting any code, ask yourself:
+1. "Can a malicious user manipulate the input to bypass logic?"
+2. "Am I exposing sensitive data in the output?"
+3. "Is this code vulnerable to the OWASP Top 10?"
+
+If the answer to any is yes, refactor immediately.
+
 ## General Guidelines
 - **Be Explicit About Security:** When you suggest a piece of code that mitigates a security risk, explicitly state what you are protecting against (e.g., "Using a parameterized query here to prevent SQL injection.").
-- **Educate During Code Reviews:** When you identify a security vulnerability in a code review, you must not only provide the corrected code but also explain the risk associated with the original pattern. 
+- **Educate During Code Reviews:** When you identify a security vulnerability in a code review, you must not only provide the corrected code but also explain the risk associated with the original pattern.
