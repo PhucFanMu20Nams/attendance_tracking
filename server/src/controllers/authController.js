@@ -34,7 +34,8 @@ export const login = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
 
-    console.error('Login error:', error);
+    // SECURITY: Only log message to prevent leaking sensitive data in logs
+    console.error('Login error:', error.message);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -50,7 +51,8 @@ export const getMe = async (req, res) => {
       return res.status(error.statusCode).json({ message: error.message });
     }
 
-    console.error('GetMe error:', error);
+    // SECURITY: Only log message to prevent leaking sensitive data in logs
+    console.error('GetMe error:', error.message);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
