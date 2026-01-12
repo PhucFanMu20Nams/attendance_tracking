@@ -3,7 +3,7 @@ import * as authService from '../services/authService.js';
 /** POST /api/auth/login */
 export const login = async (req, res) => {
   try {
-    
+
     const body = req.body || {};
     const { identifier, password } = body;
 
