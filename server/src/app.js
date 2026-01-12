@@ -3,6 +3,7 @@ import cors from 'cors';
 import authRoutes from './routes/authRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import requestRoutes from './routes/requestRoutes.js';
+import timesheetRoutes from './routes/timesheetRoutes.js';
 
 const app = express();
 
@@ -24,5 +25,6 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/requests', requestRoutes);
+app.use('/api/timesheet', timesheetRoutes);
 
 export default app;
