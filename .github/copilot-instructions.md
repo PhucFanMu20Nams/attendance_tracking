@@ -60,6 +60,7 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
   - Past day + in != null + out == null => **MISSING_CHECKOUT**
   - Past workday + no record => **ABSENT**
   - Weekend/Holiday => **WEEKEND/HOLIDAY**
+  - Today/Future + no record => **null** (not ABSENT yet)
 
 ## 5) Repo Structure (Guideline)
 - `server/src/{models,routes,controllers,services,middlewares,utils}`
