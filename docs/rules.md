@@ -34,22 +34,25 @@
 
 ## Status Definitions
 - WORKING: date == today AND checkInAt != null AND checkOutAt == null
-- ON_TIME: checkInAt <= 08:45 (when checkInAt exists)
-- LATE: checkInAt >= 08:46 (when checkInAt exists)
+- ON_TIME: checkInAt <= 08:45 (when checkInAt exists and checkOutAt exists)
+- LATE: checkInAt >= 08:46 (when checkInAt exists and checkOutAt exists)
 - EARLY_LEAVE: checkOutAt < 17:30 (when checkOutAt exists)
 - MISSING_CHECKOUT: date < today AND checkInAt != null AND checkOutAt == null
 - ABSENT: date < today AND no attendance record exists for that date (workday only)
 - WEEKEND/HOLIDAY: non-working day (weekend or in holidays list)
+- **null (no status)**: date >= today AND no attendance record exists (not yet checked in or future date)
 
 ## Status Computation Rule (Critical)
 Assume "today" is computed in GMT+7.
 
 1) If date is Weekend/Holiday → WEEKEND/HOLIDAY
-2) If date == today:
+2) If date > today (future):
+   - No attendance record → status = **null** (blank cell, no status yet)
+3) If date == today:
    - checkInAt != null & checkOutAt == null → WORKING
    - checkIn/out both exist → compute ON_TIME/LATE/EARLY_LEAVE/OT normally
-   - not checked in yet → do not mark ABSENT for today
-3) If date < today:
+   - not checked in yet → status = **null** (do NOT mark ABSENT, employee may still arrive)
+4) If date < today (past):
    - no record → ABSENT
    - checkInAt exists but checkOutAt is null → MISSING_CHECKOUT
    - checkIn/out exist → compute normally
@@ -59,5 +62,10 @@ Assume "today" is computed in GMT+7.
 - Red: LATE
 - Yellow: EARLY_LEAVE or MISSING_CHECKOUT
 - Gray: WEEKEND/HOLIDAY
-- White/Empty: ABSENT
-- WORKING: White (MVP) (or Blue later if desired)
+- White: ABSENT (past workday, no record)
+- White: WORKING (MVP) — may change to Blue later
+- White: **null/blank** (today not checked in yet, or future date)
+
+> **Note for Frontend:** When `status === null`, check if `date >= today` to distinguish:
+> - `date > today` → future date (render blank)
+> - `date === today` → pending/not yet checked in (may show subtle indicator)
