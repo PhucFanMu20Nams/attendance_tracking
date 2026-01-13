@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Request from '../models/Request.js';
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
+import { getDateKey } from '../utils/dateUtils.js';
 
 /**
  * Create a new request for attendance adjustment.
@@ -42,12 +43,51 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     }
   }
 
+  // MVP: No overnight shifts - timestamps must be on the same date as request.date
+  if (requestedCheckInAt) {
+    const checkInDateKey = getDateKey(new Date(requestedCheckInAt));
+    if (checkInDateKey !== date) {
+      const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  if (requestedCheckOutAt) {
+    const checkOutDateKey = getDateKey(new Date(requestedCheckOutAt));
+    if (checkOutDateKey !== date) {
+      const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
   // Business rule: If attendance doesn't exist for this date, checkInAt is required
   // (because Attendance.checkInAt is a required field)
-  if (!requestedCheckInAt) {
-    const existingAttendance = await Attendance.findOne({ userId, date });
-    if (!existingAttendance) {
-      const error = new Error('Cannot create new attendance without check-in time. Please include requestedCheckInAt');
+  // Also validate partial requests against existing attendance data
+  const existingAttendance = await Attendance.findOne({ userId, date });
+
+  if (!requestedCheckInAt && !existingAttendance) {
+    const error = new Error('Cannot create new attendance without check-in time. Please include requestedCheckInAt');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validate checkOut-only: must be > existing checkInAt
+  if (requestedCheckOutAt && !requestedCheckInAt && existingAttendance) {
+    const existingCheckIn = existingAttendance.checkInAt;
+    if (existingCheckIn && new Date(requestedCheckOutAt) <= new Date(existingCheckIn)) {
+      const error = new Error('requestedCheckOutAt must be after existing check-in time');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  // Validate checkIn-only: must be < existing checkOutAt (if exists)
+  if (requestedCheckInAt && !requestedCheckOutAt && existingAttendance) {
+    const existingCheckOut = existingAttendance.checkOutAt;
+    if (existingCheckOut && new Date(requestedCheckInAt) >= new Date(existingCheckOut)) {
+      const error = new Error('requestedCheckInAt must be before existing check-out time');
       error.statusCode = 400;
       throw error;
     }
@@ -169,6 +209,25 @@ export const approveRequest = async (requestId, approver) => {
     }
   }
   // Admin can approve any request (no additional check needed)
+
+  // MVP: Validate timestamps are on request.date (defense-in-depth for legacy data)
+  if (request.requestedCheckInAt) {
+    const checkInDateKey = getDateKey(new Date(request.requestedCheckInAt));
+    if (checkInDateKey !== request.date) {
+      const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  if (request.requestedCheckOutAt) {
+    const checkOutDateKey = getDateKey(new Date(request.requestedCheckOutAt));
+    if (checkOutDateKey !== request.date) {
+      const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
 
   // Update request status
   request.status = 'APPROVED';
