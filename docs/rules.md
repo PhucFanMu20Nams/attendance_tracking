@@ -69,3 +69,8 @@ Assume "today" is computed in GMT+7.
 > **Note for Frontend:** When `status === null`, check if `date >= today` to distinguish:
 > - `date > today` → future date (render blank)
 > - `date === today` → pending/not yet checked in (may show subtle indicator)
+
+## Requests (Attendance Adjustment)
+- MVP does not support overnight shifts
+- When adjusting times, requestedCheckInAt/requestedCheckOutAt (if provided) must be on the same `date` (dateKey) in GMT+7
+- This prevents accidental cross-day timestamps that inflate workMinutes/otMinutes
