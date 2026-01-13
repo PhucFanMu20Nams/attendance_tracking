@@ -75,7 +75,11 @@ Request body:
 - reason: string
 
 Rules:
-- If both requestedCheckInAt and requestedCheckOutAt exist, requestedCheckOutAt must be > requestedCheckInAt
+- If requestedCheckInAt exists, it must be on request.date in GMT+7 (same dateKey)
+- If requestedCheckOutAt exists, it must be on request.date in GMT+7 (same dateKey)
+- If both exist, requestedCheckOutAt must be > requestedCheckInAt
+- If only requestedCheckOutAt exists, it must be > existing attendance.checkInAt
+- If only requestedCheckInAt exists and attendance.checkOutAt exists, requestedCheckInAt must be < attendance.checkOutAt
 
 Response:
 - request: { ... }
@@ -102,6 +106,7 @@ Roles: MANAGER | ADMIN
 Behavior:
 - MANAGER: Can only approve requests from users in the same team
 - ADMIN: Can approve any request across the company
+- Validate requested timestamps are on request.date (GMT+7). If invalid → 400
 - Update request status = APPROVED
 - Update attendance based on request:
   - If attendance does not exist → create
@@ -156,7 +161,7 @@ Response:
   {
     user: { _id, name, employeeCode },
     totalWorkMinutes,
-    totalLateCount,
+    totalLateCount,      // count of days with lateMinutes > 0 (including WORKING/MISSING_CHECKOUT)
     totalOtMinutes,
     approvedOtMinutes (optional)
   }
