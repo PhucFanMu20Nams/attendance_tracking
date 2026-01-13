@@ -34,6 +34,14 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     throw error;
   }
 
+  // Security: Limit reason length to prevent DoS (1000 chars is enough for a detailed explanation)
+  const MAX_REASON_LENGTH = 1000;
+  if (reason.length > MAX_REASON_LENGTH) {
+    const error = new Error(`Reason must be ${MAX_REASON_LENGTH} characters or less`);
+    error.statusCode = 400;
+    throw error;
+  }
+
   // If both times provided, check-out must be after check-in
   if (requestedCheckInAt && requestedCheckOutAt) {
     if (new Date(requestedCheckOutAt) <= new Date(requestedCheckInAt)) {
@@ -91,6 +99,20 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
       error.statusCode = 400;
       throw error;
     }
+  }
+
+  // Prevent duplicate PENDING requests for the same date (Overlapping fix)
+  const existingPendingRequest = await Request.findOne({
+    userId,
+    date,
+    type: 'ADJUST_TIME',
+    status: 'PENDING'
+  }).select('_id');
+
+  if (existingPendingRequest) {
+    const error = new Error('You already have a pending request for this date. Please wait for approval or cancel the existing request.');
+    error.statusCode = 409;
+    throw error;
   }
 
   const request = await Request.create({
@@ -158,7 +180,7 @@ export const getPendingRequests = async (user) => {
 
 /**
  * Approve a request and update/create attendance record.
- * Critical: Implements atomic update to prevent race conditions.
+ * Uses atomic findOneAndUpdate to prevent race conditions.
  * RBAC: MANAGER can only approve requests from users in the same team.
  *       ADMIN can approve any request across the company.
  * 
@@ -173,22 +195,17 @@ export const approveRequest = async (requestId, approver) => {
     throw error;
   }
 
-  const request = await Request.findById(requestId)
+  // First, fetch the request to validate RBAC and business rules
+  const existingRequest = await Request.findById(requestId)
     .populate('userId', 'teamId');
 
-  if (!request) {
+  if (!existingRequest) {
     const error = new Error('Request not found');
     error.statusCode = 404;
     throw error;
   }
 
-  if (request.status !== 'PENDING') {
-    const error = new Error(`Request already ${request.status.toLowerCase()}`);
-    error.statusCode = 409;
-    throw error;
-  }
-
-  // IDOR Check: Manager can only approve requests from their team
+  // RBAC check must happen BEFORE the atomic update
   if (approver.role === 'MANAGER') {
     if (!approver.teamId) {
       const error = new Error('Manager must be assigned to a team');
@@ -196,53 +213,73 @@ export const approveRequest = async (requestId, approver) => {
       throw error;
     }
 
-    if (!request.userId.teamId) {
+    if (!existingRequest.userId.teamId) {
       const error = new Error('Request user is not assigned to any team');
       error.statusCode = 403;
       throw error;
     }
 
-    if (!approver.teamId.equals(request.userId.teamId)) {
+    if (!approver.teamId.equals(existingRequest.userId.teamId)) {
       const error = new Error('You can only approve requests from your team');
       error.statusCode = 403;
       throw error;
     }
   }
-  // Admin can approve any request (no additional check needed)
 
-  // MVP: Validate timestamps are on request.date (defense-in-depth for legacy data)
-  if (request.requestedCheckInAt) {
-    const checkInDateKey = getDateKey(new Date(request.requestedCheckInAt));
-    if (checkInDateKey !== request.date) {
+  // MVP: Validate timestamps are on request.date (defense-in-depth)
+  if (existingRequest.requestedCheckInAt) {
+    const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
+    if (checkInDateKey !== existingRequest.date) {
       const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
       error.statusCode = 400;
       throw error;
     }
   }
 
-  if (request.requestedCheckOutAt) {
-    const checkOutDateKey = getDateKey(new Date(request.requestedCheckOutAt));
-    if (checkOutDateKey !== request.date) {
+  if (existingRequest.requestedCheckOutAt) {
+    const checkOutDateKey = getDateKey(new Date(existingRequest.requestedCheckOutAt));
+    if (checkOutDateKey !== existingRequest.date) {
       const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
       error.statusCode = 400;
       throw error;
     }
   }
 
-  // Update request status
-  request.status = 'APPROVED';
-  request.approvedBy = approver._id;
-  request.approvedAt = new Date();
-  await request.save();
+  // Atomic update: Only succeeds if status is still PENDING (prevents race condition)
+  const updatedRequest = await Request.findOneAndUpdate(
+    {
+      _id: requestId,
+      status: 'PENDING'  // Condition: must be PENDING to update
+    },
+    {
+      $set: {
+        status: 'APPROVED',
+        approvedBy: approver._id,
+        approvedAt: new Date()
+      }
+    },
+    { new: true }
+  ).populate('userId', 'teamId');
+
+  // If no document was updated, it means status was not PENDING (race condition lost)
+  if (!updatedRequest) {
+    // Re-fetch to get current status for better error message
+    const currentRequest = await Request.findById(requestId);
+    const currentStatus = currentRequest ? currentRequest.status.toLowerCase() : 'unknown';
+    const error = new Error(`Request already ${currentStatus}`);
+    error.statusCode = 409;
+    throw error;
+  }
 
   // Update or create attendance for the requested date
-  await updateAttendanceFromRequest(request);
+  await updateAttendanceFromRequest(updatedRequest);
 
-  return request;
+  return updatedRequest;
 };
 
 /**
  * Reject a request.
+ * Uses atomic findOneAndUpdate to prevent race conditions.
  * RBAC: MANAGER can only reject requests from users in the same team.
  *       ADMIN can reject any request across the company.
  * 
@@ -257,22 +294,17 @@ export const rejectRequest = async (requestId, approver) => {
     throw error;
   }
 
-  const request = await Request.findById(requestId)
+  // First, fetch the request to validate RBAC
+  const existingRequest = await Request.findById(requestId)
     .populate('userId', 'teamId');
 
-  if (!request) {
+  if (!existingRequest) {
     const error = new Error('Request not found');
     error.statusCode = 404;
     throw error;
   }
 
-  if (request.status !== 'PENDING') {
-    const error = new Error(`Request already ${request.status.toLowerCase()}`);
-    error.statusCode = 409;
-    throw error;
-  }
-
-  // IDOR Check: Manager can only reject requests from their team
+  // RBAC check must happen BEFORE the atomic update
   if (approver.role === 'MANAGER') {
     if (!approver.teamId) {
       const error = new Error('Manager must be assigned to a team');
@@ -280,26 +312,46 @@ export const rejectRequest = async (requestId, approver) => {
       throw error;
     }
 
-    if (!request.userId.teamId) {
+    if (!existingRequest.userId.teamId) {
       const error = new Error('Request user is not assigned to any team');
       error.statusCode = 403;
       throw error;
     }
 
-    if (!approver.teamId.equals(request.userId.teamId)) {
+    if (!approver.teamId.equals(existingRequest.userId.teamId)) {
       const error = new Error('You can only reject requests from your team');
       error.statusCode = 403;
       throw error;
     }
   }
-  // Admin can reject any request (no additional check needed)
 
-  request.status = 'REJECTED';
-  request.approvedBy = approver._id;
-  request.approvedAt = new Date();
-  await request.save();
+  // Atomic update: Only succeeds if status is still PENDING (prevents race condition)
+  const updatedRequest = await Request.findOneAndUpdate(
+    {
+      _id: requestId,
+      status: 'PENDING'  // Condition: must be PENDING to update
+    },
+    {
+      $set: {
+        status: 'REJECTED',
+        approvedBy: approver._id,
+        approvedAt: new Date()
+      }
+    },
+    { new: true }
+  );
 
-  return request;
+  // If no document was updated, it means status was not PENDING (race condition lost)
+  if (!updatedRequest) {
+    // Re-fetch to get current status for better error message
+    const currentRequest = await Request.findById(requestId);
+    const currentStatus = currentRequest ? currentRequest.status.toLowerCase() : 'unknown';
+    const error = new Error(`Request already ${currentStatus}`);
+    error.statusCode = 409;
+    throw error;
+  }
+
+  return updatedRequest;
 };
 
 /**
