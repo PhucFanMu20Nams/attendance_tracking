@@ -4,6 +4,7 @@ import authRoutes from './routes/authRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import requestRoutes from './routes/requestRoutes.js';
 import timesheetRoutes from './routes/timesheetRoutes.js';
+import reportRoutes from './routes/reportRoutes.js';
 
 const app = express();
 
@@ -26,5 +27,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/requests', requestRoutes);
 app.use('/api/timesheet', timesheetRoutes);
+app.use('/api/reports', reportRoutes);
 
 export default app;
