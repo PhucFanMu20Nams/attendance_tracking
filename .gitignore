@@ -27,6 +27,5 @@ yarn-error.log*
 dist/
 build/
 
-# Local AI workspace
-.agent/
+
 
