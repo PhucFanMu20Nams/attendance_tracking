@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import * as reportService from '../services/reportService.js';
+import * as exportService from '../services/exportService.js';
 import { getTodayDateKey } from '../utils/dateUtils.js';
 
 /**
@@ -89,8 +90,117 @@ export const getMonthlyReport = async (req, res) => {
         return res.status(200).json(result);
     } catch (error) {
         const statusCode = error.statusCode || 500;
-        return res.status(statusCode).json({
-            message: error.message || 'Failed to fetch monthly report'
-        });
+        // LOG: Internal debugging (not exposed to client)
+        if (statusCode >= 500) {
+            console.error('getMonthlyReport error:', error);
+        }
+        // SECURITY: Don't expose internal error details for 500 errors (OWASP A09)
+        const message = statusCode >= 500
+            ? 'Failed to fetch monthly report'
+            : (error.message || 'Bad request');
+
+        return res.status(statusCode).json({ message });
+    }
+};
+
+/**
+ * GET /api/reports/monthly/export?month=YYYY-MM&scope=team|company&teamId?
+ * Export monthly report as Excel file.
+ * RBAC: Manager (team only), Admin (team or company).
+ */
+export const exportMonthlyReport = async (req, res) => {
+    try {
+        const user = req.user;
+        let { month, scope, teamId } = req.query;
+
+        // Defense-in-depth: Only Manager/Admin can access reports
+        if (!['MANAGER', 'ADMIN'].includes(user.role)) {
+            return res.status(403).json({
+                message: 'Only Manager and Admin can export reports'
+            });
+        }
+
+        // Default month to current month if not provided
+        if (!month) {
+            const today = getTodayDateKey();
+            month = today.slice(0, 7);
+        }
+
+        // Validate month format
+        if (!/^\d{4}-\d{2}$/.test(month)) {
+            return res.status(400).json({
+                message: 'Invalid month format. Expected YYYY-MM (e.g., 2026-01)'
+            });
+        }
+
+        // Default scope based on role
+        if (!scope) {
+            scope = user.role === 'ADMIN' ? 'company' : 'team';
+        }
+
+        // Validate scope value
+        if (!['team', 'company'].includes(scope)) {
+            return res.status(400).json({
+                message: 'Invalid scope. Expected "team" or "company"'
+            });
+        }
+
+        // RBAC: Manager can only view team scope
+        if (user.role === 'MANAGER') {
+            if (scope !== 'team') {
+                return res.status(403).json({
+                    message: 'Manager can only export team reports'
+                });
+            }
+
+            if (!user.teamId) {
+                return res.status(403).json({
+                    message: 'Manager must be assigned to a team'
+                });
+            }
+
+            teamId = user.teamId;
+        }
+
+        // RBAC: Admin can view company or specify teamId
+        if (user.role === 'ADMIN') {
+            if (scope === 'team') {
+                if (!teamId) {
+                    return res.status(400).json({
+                        message: 'Admin must specify teamId for team scope export'
+                    });
+                }
+                if (!mongoose.Types.ObjectId.isValid(teamId)) {
+                    return res.status(400).json({
+                        message: 'Invalid teamId format'
+                    });
+                }
+            }
+        }
+
+        // TODO: In future, fetch holiday dates from Holiday model
+        const holidayDates = new Set();
+
+        const buffer = await exportService.generateMonthlyExportExcel(scope, month, teamId, holidayDates);
+
+        // Set response headers for Excel download
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=report-${month}-${scope}.xlsx`);
+        // SECURITY: Prevent caching of sensitive data
+        res.setHeader('Cache-Control', 'no-store');
+
+        return res.send(buffer);
+    } catch (error) {
+        const statusCode = error.statusCode || 500;
+        // LOG: Internal debugging (not exposed to client)
+        if (statusCode >= 500) {
+            console.error('exportMonthlyReport error:', error);
+        }
+        // SECURITY: Don't expose internal error details for 500 errors (OWASP A09)
+        const message = statusCode >= 500
+            ? 'Failed to export monthly report'
+            : (error.message || 'Bad request');
+
+        return res.status(statusCode).json({ message });
     }
 };
