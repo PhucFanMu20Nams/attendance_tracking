@@ -10,4 +10,8 @@ const router = express.Router();
 // Roles: MANAGER | ADMIN
 router.get('/monthly', authenticate, authorize('MANAGER', 'ADMIN'), reportController.getMonthlyReport);
 
+// GET /api/reports/monthly/export?month=YYYY-MM&scope=team|company&teamId?
+// Roles: MANAGER | ADMIN
+router.get('/monthly/export', authenticate, authorize('MANAGER', 'ADMIN'), reportController.exportMonthlyReport);
+
 export default router;
