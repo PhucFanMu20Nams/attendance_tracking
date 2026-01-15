@@ -7,6 +7,8 @@ import DashboardPage from './pages/DashboardPage';
 import MyAttendancePage from './pages/MyAttendancePage';
 import RequestsPage from './pages/RequestsPage';
 import ApprovalsPage from './pages/ApprovalsPage';
+import TimesheetMatrixPage from './pages/TimesheetMatrixPage';
+import MonthlyReportPage from './pages/MonthlyReportPage';
 
 /**
  * App: Main routing component for Attendance App.
@@ -69,7 +71,7 @@ export default function App() {
                     path="/timesheet"
                     element={
                         <RoleRoute allowedRoles={['MANAGER', 'ADMIN']}>
-                            <PlaceholderPage title="Timesheet Matrix" />
+                            <TimesheetMatrixPage />
                         </RoleRoute>
                     }
                 />
@@ -77,7 +79,7 @@ export default function App() {
                     path="/reports"
                     element={
                         <RoleRoute allowedRoles={['MANAGER', 'ADMIN']}>
-                            <PlaceholderPage title="Monthly Report" />
+                            <MonthlyReportPage />
                         </RoleRoute>
                     }
                 />
