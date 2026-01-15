@@ -3,6 +3,8 @@ import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import RoleRoute from './components/RoleRoute';
 import LoginPage from './pages/LoginPage';
+import DashboardPage from './pages/DashboardPage';
+import MyAttendancePage from './pages/MyAttendancePage';
 
 /**
  * App: Main routing component for Attendance App.
@@ -41,11 +43,11 @@ export default function App() {
                 {/* All roles can access */}
                 <Route
                     path="/dashboard"
-                    element={<PlaceholderPage title="Dashboard" />}
+                    element={<DashboardPage />}
                 />
                 <Route
                     path="/my-attendance"
-                    element={<PlaceholderPage title="My Attendance" />}
+                    element={<MyAttendancePage />}
                 />
                 <Route
                     path="/requests"
@@ -84,6 +86,7 @@ export default function App() {
         </Routes>
     );
 }
+
 
 /**
  * PlaceholderPage: Temporary component until Stage 4-6 pages are implemented.
