@@ -5,6 +5,8 @@ import RoleRoute from './components/RoleRoute';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import MyAttendancePage from './pages/MyAttendancePage';
+import RequestsPage from './pages/RequestsPage';
+import ApprovalsPage from './pages/ApprovalsPage';
 
 /**
  * App: Main routing component for Attendance App.
@@ -51,7 +53,7 @@ export default function App() {
                 />
                 <Route
                     path="/requests"
-                    element={<PlaceholderPage title="Requests" />}
+                    element={<RequestsPage />}
                 />
 
                 {/* MANAGER and ADMIN only */}
@@ -59,7 +61,7 @@ export default function App() {
                     path="/approvals"
                     element={
                         <RoleRoute allowedRoles={['MANAGER', 'ADMIN']}>
-                            <PlaceholderPage title="Approvals" />
+                            <ApprovalsPage />
                         </RoleRoute>
                     }
                 />
