@@ -3,6 +3,7 @@ import { Table, Select, Button, Spinner, Alert } from 'flowbite-react';
 import { HiDownload } from 'react-icons/hi';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { downloadBlob } from '../utils/downloadBlob';
 
 /**
  * MonthlyReportPage: Manager/Admin views monthly summary + exports Excel.
@@ -24,15 +25,22 @@ export default function MonthlyReportPage() {
 
     // Filter states
     const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7));
-    const [scope, setScope] = useState('team');
+    // Default: Admin sees company, Manager sees team (avoids 400 when Admin has no teamId)
+    const [scope, setScope] = useState(isAdmin ? 'company' : 'team');
 
     // Data states
     const [summary, setSummary] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [exporting, setExporting] = useState(false); // Export loading state
 
     // Derived scope: non-admin always uses 'team' (prevents race condition on role change)
     const effectiveScope = isAdmin ? scope : 'team';
+
+    // Defense-in-depth: ensure Admin uses 'company' if isAdmin changes after mount
+    useEffect(() => {
+        if (isAdmin && scope === 'team') setScope('company');
+    }, [isAdmin, scope]);
 
     // Generate last 12 months options (GMT+7)
     const monthOptions = useMemo(() => {
@@ -78,16 +86,45 @@ export default function MonthlyReportPage() {
         return () => controller.abort();
     }, [fetchReport]);
 
-    // Handle Excel export (open in new tab)
-    const handleExport = () => {
-        const token = localStorage.getItem('token');
-        if (!token) {
-            setError('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
-            return;
+    // Handle Excel export (secure Blob download - OWASP A09 compliant)
+    const handleExport = async () => {
+        setExporting(true);
+        setError('');
+        try {
+            const response = await client.get(
+                `/reports/monthly/export?month=${selectedMonth}&scope=${effectiveScope}`,
+                { responseType: 'blob' }
+            );
+
+            // Get filename from Content-Disposition header if available
+            const contentDisposition = response.headers['content-disposition'];
+            let filename = `report-${selectedMonth}-${effectiveScope}.xlsx`;
+            if (contentDisposition) {
+                const match = contentDisposition.match(/filename[^;=\n]*=(['"]?)([^'"\n]*?)\1(?:;|$)/);
+                if (match && match[2]) {
+                    filename = match[2];
+                }
+            }
+
+            downloadBlob(response.data, filename);
+        } catch (err) {
+            // Handle blob error response (parse JSON message from blob)
+            let errorMessage = 'Xuất báo cáo thất bại';
+            if (err.response?.status === 401) {
+                errorMessage = 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.';
+            } else if (err.response?.data instanceof Blob) {
+                try {
+                    const text = await err.response.data.text();
+                    const json = JSON.parse(text);
+                    errorMessage = json.message || errorMessage;
+                } catch { /* ignore parse error */ }
+            } else {
+                errorMessage = err.response?.data?.message || errorMessage;
+            }
+            setError(errorMessage);
+        } finally {
+            setExporting(false);
         }
-        const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
-        const exportUrl = `${baseUrl}/reports/monthly/export?month=${selectedMonth}&scope=${effectiveScope}&token=${encodeURIComponent(token)}`;
-        window.open(exportUrl, '_blank');
     };
 
     // Format minutes to hours (e.g., 480 → "8.0h")
@@ -131,10 +168,19 @@ export default function MonthlyReportPage() {
                     <Button
                         color="success"
                         onClick={handleExport}
-                        disabled={loading || summary.length === 0}
+                        disabled={loading || exporting || summary.length === 0}
                     >
-                        <HiDownload className="mr-2 h-5 w-5" />
-                        Xuất Excel
+                        {exporting ? (
+                            <>
+                                <Spinner size="sm" className="mr-2" />
+                                Đang tải...
+                            </>
+                        ) : (
+                            <>
+                                <HiDownload className="mr-2 h-5 w-5" />
+                                Xuất Excel
+                            </>
+                        )}
                     </Button>
                 </div>
             </div>
