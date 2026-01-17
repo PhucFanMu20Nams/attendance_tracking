@@ -1,5 +1,7 @@
 import * as attendanceService from '../services/attendanceService.js';
 import { getTodayDateKey } from '../utils/dateUtils.js';
+import mongoose from 'mongoose';
+import User from '../models/User.js';
 
 /**
  * POST /api/attendance/check-in
@@ -80,3 +82,195 @@ export const getMyAttendance = async (req, res) => {
     });
   }
 };
+
+/**
+ * GET /api/attendance/today?scope=team|company&teamId?
+ * Get today's activity for Member Management.
+ * 
+ * RBAC:
+ * - MANAGER: scope=team only (teamId ignored, uses token.user.teamId)
+ * - ADMIN: scope=company (all users) OR scope=team (requires teamId)
+ */
+export const getTodayAttendance = async (req, res) => {
+  try {
+    const { role, teamId: userTeamId } = req.user;
+    let { scope, teamId } = req.query;
+
+    // RBAC: Manager can only view team scope
+    if (role === 'MANAGER') {
+      scope = 'team'; // Force team scope for manager
+      teamId = userTeamId; // Use manager's own team
+
+      if (!teamId) {
+        return res.status(403).json({
+          message: 'Manager must be assigned to a team to view team activity'
+        });
+      }
+    }
+    // Admin validation
+    else if (role === 'ADMIN') {
+      // FIX #1: Scope invalid → 400 (not fallback to company)
+      if (!scope) {
+        scope = 'company'; // Default to company if not provided
+      } else if (!['team', 'company'].includes(scope)) {
+        return res.status(400).json({
+          message: 'Invalid scope. Must be "team" or "company"'
+        });
+      }
+
+      if (scope === 'team') {
+        // FIX #2: Validate teamId is provided and is valid ObjectId
+        if (!teamId) {
+          return res.status(400).json({
+            message: 'Admin must specify teamId for team scope'
+          });
+        }
+        if (!mongoose.Types.ObjectId.isValid(teamId)) {
+          return res.status(400).json({
+            message: 'Invalid teamId format'
+          });
+        }
+      }
+    }
+    // Employee not allowed
+    else {
+      return res.status(403).json({
+        message: 'Insufficient permissions. Manager or Admin required.'
+      });
+    }
+
+    // TODO: Fetch holidays from database in future
+    const holidayDates = new Set();
+
+    const result = await attendanceService.getTodayActivity(scope, teamId, holidayDates);
+
+    return res.status(200).json(result);
+  } catch (error) {
+    // OWASP A05/A09: Verbose logging in dev, generic in prod
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Error fetching today activity:', error);
+    } else {
+      console.error('Error fetching today activity');
+    }
+
+    const statusCode = error.statusCode || 500;
+
+    // FIX #4: 4xx returns message, 5xx returns generic (OWASP A09)
+    const responseMessage = statusCode < 500
+      ? (error.message || 'Request failed')
+      : 'Internal server error';
+
+    return res.status(statusCode).json({
+      message: responseMessage
+    });
+  }
+};
+
+/**
+ * GET /api/attendance/user/:id?month=YYYY-MM
+ * Get monthly attendance history for a specific user (Member Management).
+ * 
+ * RBAC:
+ * - MANAGER: can only access users in same team (Anti-IDOR, returns 403)
+ * - ADMIN: can access any user
+ * - EMPLOYEE: blocked (403)
+ */
+export const getAttendanceByUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role, teamId: requestingUserTeamId } = req.user;
+    let { month } = req.query;
+
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        message: 'Invalid user ID format'
+      });
+    }
+
+    // Block Employee role
+    if (role === 'EMPLOYEE') {
+      return res.status(403).json({
+        message: 'Insufficient permissions. Manager or Admin required.'
+      });
+    }
+
+    // FIX C: Manager without teamId cannot access member management
+    if (role === 'MANAGER' && !requestingUserTeamId) {
+      return res.status(403).json({
+        message: 'Manager must be assigned to a team'
+      });
+    }
+
+    // Validate month format (default to current month if not provided)
+    if (!month) {
+      const today = getTodayDateKey();
+      month = today.substring(0, 7); // Extract "YYYY-MM"
+    } else if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({
+        message: 'Invalid month format. Expected YYYY-MM (e.g., 2026-01)'
+      });
+    }
+
+    // Query-level Anti-IDOR (cleaner pattern):
+    // - MANAGER: query includes teamId to only verify same-team users
+    // - ADMIN: can access any user
+    let targetUser;
+
+    if (role === 'MANAGER') {
+      // Manager can only access users in same team (Anti-IDOR at query level)
+      targetUser = await User.findOne({
+        _id: id,
+        teamId: requestingUserTeamId
+      })
+        .select('_id')
+        .lean();
+
+      // Not found OR different team => same 403 response (per RULES.md line 126)
+      if (!targetUser) {
+        return res.status(403).json({
+          message: 'Access denied. You can only view users in your team.'
+        });
+      }
+    } else {
+      // Admin can access any user
+      targetUser = await User.findById(id)
+        .select('_id')
+        .lean();
+
+      // Not found
+      if (!targetUser) {
+        return res.status(404).json({
+          message: 'User not found'
+        });
+      }
+    }
+
+    // TODO: Fetch holidays from database in future
+    const holidayDates = new Set();
+
+    // Get monthly history using existing service
+    const items = await attendanceService.getMonthlyHistory(id, month, holidayDates);
+
+    return res.status(200).json({ items });
+  } catch (error) {
+    // OWASP A05/A09: Verbose logging in dev, generic in prod
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Error fetching user attendance history:', error);
+    } else {
+      console.error('Error fetching user attendance history');
+    }
+
+    const statusCode = error.statusCode || 500;
+
+    // 4xx returns message, 5xx returns generic (OWASP A09)
+    const responseMessage = statusCode < 500
+      ? (error.message || 'Request failed')
+      : 'Internal server error';
+
+    return res.status(statusCode).json({
+      message: responseMessage
+    });
+  }
+};
+
