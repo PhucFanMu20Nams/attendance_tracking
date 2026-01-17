@@ -9,6 +9,10 @@ import RequestsPage from './pages/RequestsPage';
 import ApprovalsPage from './pages/ApprovalsPage';
 import TimesheetMatrixPage from './pages/TimesheetMatrixPage';
 import MonthlyReportPage from './pages/MonthlyReportPage';
+import AdminMembersPage from './pages/AdminMembersPage';
+import AdminMemberDetailPage from './pages/AdminMemberDetailPage';
+import TeamMembersPage from './pages/TeamMembersPage';
+import TeamMemberDetailPage from './pages/TeamMemberDetailPage';
 
 /**
  * App: Main routing component for Attendance App.
@@ -23,6 +27,10 @@ import MonthlyReportPage from './pages/MonthlyReportPage';
  *   - /approvals: MANAGER, ADMIN only
  *   - /timesheet: MANAGER, ADMIN only
  *   - /reports: MANAGER, ADMIN only
+ *   - /team/members: MANAGER only
+ *   - /team/members/:id: MANAGER only
+ *   - /admin/members: ADMIN only
+ *   - /admin/members/:id: ADMIN only
  *
  * Note: Page components will be implemented in Stage 4-6.
  * Currently using placeholder text until those stages.
@@ -80,6 +88,42 @@ export default function App() {
                     element={
                         <RoleRoute allowedRoles={['MANAGER', 'ADMIN']}>
                             <MonthlyReportPage />
+                        </RoleRoute>
+                    }
+                />
+
+                {/* MANAGER only */}
+                <Route
+                    path="/team/members"
+                    element={
+                        <RoleRoute allowedRoles={['MANAGER']}>
+                            <TeamMembersPage />
+                        </RoleRoute>
+                    }
+                />
+                <Route
+                    path="/team/members/:id"
+                    element={
+                        <RoleRoute allowedRoles={['MANAGER']}>
+                            <TeamMemberDetailPage />
+                        </RoleRoute>
+                    }
+                />
+
+                {/* ADMIN only */}
+                <Route
+                    path="/admin/members"
+                    element={
+                        <RoleRoute allowedRoles={['ADMIN']}>
+                            <AdminMembersPage />
+                        </RoleRoute>
+                    }
+                />
+                <Route
+                    path="/admin/members/:id"
+                    element={
+                        <RoleRoute allowedRoles={['ADMIN']}>
+                            <AdminMemberDetailPage />
                         </RoleRoute>
                     }
                 />
