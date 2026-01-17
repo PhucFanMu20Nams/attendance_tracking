@@ -5,6 +5,9 @@ import attendanceRoutes from './routes/attendanceRoutes.js';
 import requestRoutes from './routes/requestRoutes.js';
 import timesheetRoutes from './routes/timesheetRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
+import teamRoutes from './routes/teamRoutes.js';
+import userRoutes from './routes/userRoutes.js';
+import adminRoutes from './routes/adminRoutes.js';
 
 const app = express();
 
@@ -28,5 +31,8 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/requests', requestRoutes);
 app.use('/api/timesheet', timesheetRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/teams', teamRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/admin', adminRoutes);
 
 export default app;
