@@ -245,3 +245,156 @@ If time is tight on Day 4, cut in this order:
 - Most important: status logic WORKING vs MISSING_CHECKOUT is correct
 
 ---
+
+# Day 5 — Member Management (Backend first → Frontend) (v2.2)
+
+> **Assumption:** MVP v2.1 is already done (auth, attendance, requests, matrix, reports, export, admin users/holidays).
+> **Goal:** Add Member Management (Admin + Manager) with "today activity" only.
+
+---
+
+## Part A — Backend (do first)
+
+### A1) Teams directory
+1) **GET /api/teams**
+- Roles: EMPLOYEE | MANAGER | ADMIN
+- Response: items: [{ _id, name }]
+
+Done checklist:
+- [ ] Returns all teams
+- [ ] Works with JWT auth
+
+Commit:
+- `feat(server): teams directory api`
+
+---
+
+### A2) Today activity API (core)
+2) **GET /api/attendance/today?scope=team|company&teamId?**
+RBAC:
+- MANAGER: scope=team only (ignore teamId, use token.user.teamId)
+- ADMIN:
+  - scope=company => all users
+  - scope=team => require teamId
+
+Rules:
+- "Today" computed in GMT+7
+- If user has no attendance record today => status must be **null** (NOT ABSENT)
+- Return checkInAt/checkOutAt if present + computed status + lateMinutes
+
+Done checklist:
+- [ ] Admin company scope returns all users
+- [ ] Admin team scope returns only that team
+- [ ] Manager returns only same team
+- [ ] No record today => status null (not ABSENT)
+- [ ] No sensitive fields returned (passwordHash)
+
+Commit:
+- `feat(server): today activity api (team/company scope)`
+
+---
+
+### A3) Member detail + monthly history (manager/admin)
+3) **GET /api/users/:id**
+- Roles: MANAGER | ADMIN
+- Anti-IDOR:
+  - Manager can only access same-team users
+  - Admin can access any user
+- Response is sanitized (no passwordHash)
+
+4) **GET /api/attendance/user/:id?month=YYYY-MM**
+- Roles: MANAGER | ADMIN
+- Anti-IDOR same as above
+- Response shape matches /attendance/me (computed fields)
+
+Done checklist:
+- [ ] Manager cannot access other-team users (403)
+- [ ] Admin can access any user
+- [ ] Monthly attendance by user returns computed fields
+
+Commit:
+- `feat(server): user detail + attendance by user (rbac + anti-idor)`
+
+---
+
+### A4) Admin member management (edit + reset password)
+5) **PATCH /api/admin/users/:id**
+- Roles: ADMIN
+- Whitelist only:
+  - name, email, username, teamId, isActive, startDate
+
+6) **POST /api/admin/users/:id/reset-password**
+- Roles: ADMIN
+- Body: { newPassword }
+- newPassword length >= 8
+- bcrypt hash
+- do not log password
+
+Done checklist:
+- [ ] Admin can update member basic fields
+- [ ] Admin can toggle isActive
+- [ ] Reset password works; user can login with new password
+
+Commit:
+- `feat(server): admin edit member + reset password`
+
+---
+
+## Part B — Frontend (after backend is stable)
+
+> Keep UI simple: tables + forms.
+
+### B1) Admin pages
+1) `/admin/members`
+- Filters:
+  - Scope: company or team
+  - Team dropdown (only when scope=team)
+- Table columns:
+  - employeeCode, name, email, username, startDate, team, isActive
+  - today status, checkInAt, checkOutAt
+- Actions:
+  - View detail
+  - Edit member (modal/form)
+  - Reset password (modal/form)
+
+2) `/admin/members/:id`
+- Member profile fields
+- Monthly attendance table (month picker)
+
+3) `/profile`
+- Shows current user via /auth/me
+
+Done checklist:
+- [ ] Admin list loads and filters work
+- [ ] Edit member + reset password flows work
+
+Commit:
+- `feat(client): admin member management pages`
+
+---
+
+### B2) Manager pages
+4) `/team/members`
+- No date picker (today only)
+- Table same as admin (team-only, no company scope)
+
+5) `/team/members/:id`
+- Member detail + monthly attendance (same-team only)
+
+Done checklist:
+- [ ] Manager sees only same-team members
+- [ ] Manager cannot open other-team member detail (handle 403)
+
+Commit:
+- `feat(client): manager team members pages`
+
+---
+
+## Final Manual Tests (must pass)
+- [ ] Admin can view company today activity
+- [ ] Admin can filter by team
+- [ ] Admin can edit member fields and toggle isActive
+- [ ] Admin reset password works; user can login with new password
+- [ ] Manager sees only same-team members
+- [ ] Manager cannot access other-team members (403)
+- [ ] Today with no attendance record => status null (NOT ABSENT)

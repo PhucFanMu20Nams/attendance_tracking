@@ -1,76 +1,126 @@
-# Business Rules — Attendance App (v2.1)
+# Rules — Attendance Logic (v2.2)
 
-## Timezone
-- Fixed timezone: Asia/Ho_Chi_Minh (GMT+7)
-- "today" and "date key" are computed in GMT+7
+Timezone: Asia/Ho_Chi_Minh (GMT+7)  
+All dateKey calculations MUST use GMT+7.
 
-## Working Schedule (Shift)
-- Shift name: Office hours
-- Start: 08:30
-- End: 17:30
-- Lunch window: 12:00 – 13:00
-- Grace period: 15 minutes
+## 0) Doc Priority (Conflict Resolution)
+If docs conflict, resolve in this order:
+1) RULES.md (this file) — logic truth
+2) API_SPEC.md — endpoint shapes/behavior
+3) DATA_DICTIONARY.md — DB fields/types/indexes
 
-## On-time / Late
-- ON_TIME if checkInAt <= 08:45 (GMT+7)
-- LATE if checkInAt >= 08:46 (GMT+7)
+## 1) Workday Configuration (MVP)
+- Work start: 08:30
+- Work end: 17:30
+- Grace: 15 minutes
+  - Late starts at 08:46
+- Lunch break: 60 minutes
+  - Deduct lunch if a work span crosses 12:00–13:00
+- OT starts after 18:30
 
-## Early Leave
-- EARLY_LEAVE if checkOutAt < 17:30 (GMT+7)
+## 2) Attendance Record Rules
+- One attendance record per user per day:
+  - Unique constraint: (userId + dateKey)
+- No "ABSENT attendance record":
+  - If user is absent, there is typically NO attendance record for that day.
 
-## Overtime (OT)
-- If checkOutAt > 18:30 → otMinutes = minutes(checkOutAt - 18:30)
-- OT has a flag `otApproved` (Manager/Admin approves at month-end)
-- MVP: otApproved defaults to false (or null). Report can still show otMinutes; “approved OT minutes” can be added later.
+Fields:
+- checkInAt: required once checked in
+- checkOutAt: may be null (still working or missing checkout)
 
-## Lunch Deduction (Beginner-friendly)
-- Deduct 60 minutes if:
-  - checkInAt < 12:00 AND checkOutAt > 13:00 (GMT+7)
-- If the work interval does NOT span 12:00–13:00 → do not deduct lunch
+## 3) Status Computation Rules (Core)
+Given a dateKey and optional attendance record:
 
-## Date Key
-- Each attendance record stores `date` as "YYYY-MM-DD" (computed in GMT+7)
-- Unique constraint: (userId, date)
+### 3.1 Weekend/Holiday
+- If dateKey is weekend OR in holidays => status = WEEKEND_OR_HOLIDAY
+  - This applies whether attendance exists or not (but if you allow working on holiday, you may still show checkIn/out times)
 
-## Status Definitions
-- WORKING: date == today AND checkInAt != null AND checkOutAt == null
-- ON_TIME: checkInAt <= 08:45 (when checkInAt exists and checkOutAt exists)
-- LATE: checkInAt >= 08:46 (when checkInAt exists and checkOutAt exists)
-- EARLY_LEAVE: checkOutAt < 17:30 (when checkOutAt exists)
-- MISSING_CHECKOUT: date < today AND checkInAt != null AND checkOutAt == null
-- ABSENT: date < today AND no attendance record exists for that date (workday only)
-- WEEKEND/HOLIDAY: non-working day (weekend or in holidays list)
-- **null (no status)**: date >= today AND no attendance record exists (not yet checked in or future date)
+### 3.2 Today vs Future vs Past
+Let "todayKey" = current date in GMT+7.
 
-## Status Computation Rule (Critical)
-Assume "today" is computed in GMT+7.
+- If dateKey > todayKey (future):
+  - status = null (always)
+- If dateKey == todayKey (today):
+  - If no attendance record => status = null (NOT ABSENT)
+  - If checkInAt exists and checkOutAt is null => WORKING
+  - If checkInAt and checkOutAt exist:
+    - Determine late vs on time
+- If dateKey < todayKey (past):
+  - If no attendance record => ABSENT
+  - If checkInAt exists and checkOutAt is null => MISSING_CHECKOUT
+  - If checkInAt and checkOutAt exist:
+    - Determine late vs on time
 
-1) If date is Weekend/Holiday → WEEKEND/HOLIDAY
-2) If date > today (future):
-   - No attendance record → status = **null** (blank cell, no status yet)
-3) If date == today:
-   - checkInAt != null & checkOutAt == null → WORKING
-   - checkIn/out both exist → compute ON_TIME/LATE/EARLY_LEAVE/OT normally
-   - not checked in yet → status = **null** (do NOT mark ABSENT, employee may still arrive)
-4) If date < today (past):
-   - no record → ABSENT
-   - checkInAt exists but checkOutAt is null → MISSING_CHECKOUT
-   - checkIn/out exist → compute normally
+### 3.3 Late vs On-time
+- "On time" if checkInAt time <= 08:45 (GMT+7 local time)
+- "Late" if checkInAt time >= 08:46
 
-## UI Colors (Timesheet Matrix)
-- Green: ON_TIME
-- Red: LATE
-- Yellow: EARLY_LEAVE or MISSING_CHECKOUT
-- Gray: WEEKEND/HOLIDAY
-- White: ABSENT (past workday, no record)
-- White: WORKING (MVP) — may change to Blue later
-- White: **null/blank** (today not checked in yet, or future date)
+Return status:
+- ON_TIME
+- LATE
 
-> **Note for Frontend:** When `status === null`, check if `date >= today` to distinguish:
-> - `date > today` → future date (render blank)
-> - `date === today` → pending/not yet checked in (may show subtle indicator)
+### 3.4 Missing Checkout
+- Past date with checkInAt exists but checkOutAt is null => MISSING_CHECKOUT
 
-## Requests (Attendance Adjustment)
-- MVP does not support overnight shifts
-- When adjusting times, requestedCheckInAt/requestedCheckOutAt (if provided) must be on the same `date` (dateKey) in GMT+7
-- This prevents accidental cross-day timestamps that inflate workMinutes/otMinutes
+### 3.5 Working (today)
+- Today with checkInAt exists but checkOutAt is null => WORKING
+
+## 4) Minutes Computation
+### 4.1 lateMinutes
+If status is LATE or WORKING (late so far):
+- lateMinutes = max(0, checkInAt - 08:45)
+Else 0.
+
+### 4.2 workMinutes
+If checkInAt exists:
+- If checkOutAt exists:
+  - raw = checkOutAt - checkInAt
+  - If span crosses 12:00–13:00 => deduct 60 minutes
+  - workMinutes = max(0, raw - lunchDeduct)
+- If checkOutAt is null:
+  - workMinutes may be 0 or computed "so far" depending on UI needs
+  - For MVP reports, prefer computed only when checkOutAt exists
+Else 0.
+
+### 4.3 otMinutes
+If checkOutAt exists:
+- If checkOutAt time > 18:30:
+  - otMinutes = minutes between 18:30 and checkOutAt (excluding lunch already handled in workMinutes if needed)
+Else 0.
+
+## 5) Requests Adjustment Rules
+Requests must be on the same dateKey (GMT+7) as the request.date.
+- requestedCheckInAt and/or requestedCheckOutAt must belong to that dateKey
+- If both exist, out > in
+
+On approve:
+- Update or create attendance record for that dateKey
+- Apply requested times (set checkInAt/checkOutAt)
+
+## 6) Timesheet Matrix Rules
+- Matrix cell status uses the same computed status rules above.
+- colorKey is derived from status:
+  - WEEKEND_OR_HOLIDAY => grey
+  - ON_TIME => green
+  - LATE => orange/red
+  - WORKING => blue
+  - MISSING_CHECKOUT => yellow
+  - ABSENT => red
+  - null => empty/neutral
+
+## 7) Member Management Rules (NEW v2.2)
+### 7.1 "Today Activity" View
+- "Today activity" always refers to todayKey in GMT+7.
+- If an employee has no attendance record today:
+  - status must be null (NOT ABSENT)
+
+### 7.2 Scope & RBAC
+- ADMIN:
+  - can view company scope OR filter by team
+  - can update basic member fields (whitelist)
+  - can reset password (admin enters new password)
+- MANAGER:
+  - can only view members in the same team
+  - can view member detail + monthly attendance of same-team only
+- Anti-IDOR is mandatory on any endpoint that accepts userId:
+  - Manager must be blocked from accessing other-team users (403).

@@ -17,8 +17,8 @@
 - [ ] Today: checkInAt != null & checkOutAt == null → WORKING
 - [ ] Past day: checkInAt != null & checkOutAt == null → MISSING_CHECKOUT
 - [ ] Past workday, no record → ABSENT (excluding weekend/holiday)
-- [ ] Weekend → WEEKEND/HOLIDAY
-- [ ] Holiday created by admin → WEEKEND/HOLIDAY
+- [ ] Weekend → WEEKEND_OR_HOLIDAY
+- [ ] Holiday created by admin → WEEKEND_OR_HOLIDAY
 
 ## Rules
 - [ ] Check-in <= 08:45 → ON_TIME

@@ -1,61 +1,81 @@
-# MVP Scope — Attendance Web App (MERN) (v2.1)
+# MVP Scope — Attendance Web App (MERN) (v2.2)
 
 ## Goal
-Build a simple internal attendance MVP for an SME. Beginner-friendly, but with correct logic and room to extend later.
+Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
 
 ## In-scope (MVP Features)
 
 ### 1) Authentication
 - Login with Email/Username + Password
 - Backend returns JWT
-- Frontend uses JWT for all protected APIs
-- "me" endpoint to fetch current user info
+- Frontend uses JWT for protected APIs
+- Profile via /auth/me
 
 ### 2) Attendance (Check-in / Check-out)
 - EMPLOYEE / MANAGER / ADMIN can check-in and check-out
-- 1 attendance record per user per day (unique userId + date)
+- 1 attendance record per user per day (unique userId + dateKey)
 - Dashboard shows today's state:
   - Not checked-in yet
   - WORKING (checked-in, not checked-out)
   - Checked-out (day completed)
 
-### 3) My Attendance History (Employee)
+### 3) My Attendance History
 - View monthly attendance history (month filter YYYY-MM)
-- Columns: date, checkIn, checkOut, status (computed), lateMinutes, workMinutes, otMinutes
+- Columns:
+  - date, checkIn, checkOut, status (computed)
+  - lateMinutes, workMinutes, otMinutes
 
 ### 4) Requests (Attendance Adjustment)
 - Employee creates a request if they forgot or entered wrong time
-- Manager/Admin approves or rejects the request
-- On approval: backend updates the attendance record based on requested times
+- Manager/Admin approves or rejects
+- On approval: backend updates attendance based on requested times
 
-### 5) Timesheet Matrix (Admin/Manager)
+### 5) Timesheet Matrix
 - Monthly matrix view:
-  - Rows: employees (team scope or company scope)
-  - Columns: day 1..N
-  - Cells: computed status + color key
+  - Manager: team scope
+  - Admin: team scope or company scope
+- Cells show computed status + color key
 
 ### 6) Monthly Report + Excel Export
-- Monthly report with scope:
+- Monthly report scope:
   - Manager: team
   - Admin: company or team
 - Export to Excel (.xlsx)
 
 ### 7) Admin Basic Management
-- Admin creates users (minimum)
-- Admin creates holidays (minimum)
+- Admin creates users
+- Admin creates holidays
+
+### 8) Member Management (NEW v2.2)
+Admin:
+- View today activity of employees (today only):
+  - check-in/out times + computed status
+- Filter by team or company scope
+- Update member account fields (whitelist):
+  - name, email, username, startDate, teamId, isActive
+- Reset member password (admin manually inputs new password)
+- View own profile (via /auth/me)
+
+Manager:
+- View today activity of members in the same team (today only)
+- View member detail (profile fields)
+- View member monthly attendance history (same-team only)
 
 ## Out-of-scope (NOT in MVP)
-- Anti-fraud: IP whitelist / GPS / QR / device restriction
+- Anti-fraud: GPS/QR/device/IP restriction
 - Realtime notifications (WebSocket)
-- Complex shifts (rotating shifts, multiple shift types)
-- Break tracking during the day
-- Payroll / salary calculation / complex OT payment rules
-- Import employees from Excel / HR system
+- Complex shifts / multiple shift types
+- Break tracking
+- Payroll/salary and complex OT payment rules
+- Import employees from Excel/HR systems
 
 ## MVP Definition of Done
-- Users can login and perform check-in/out
-- WORKING vs MISSING_CHECKOUT logic is correct
+- Login works
+- Attendance check-in/out logic works correctly
+- Status computation matches RULES.md (especially today/future => null)
 - Approving a request updates attendance correctly
-- Timesheet matrix works for a selected month
+- Matrix works for selected month
 - Excel export works
-- All manual tests in TEST_CHECKLIST.md pass
+- Member Management pages work with correct RBAC:
+  - Admin company/team, Manager team-only
+- Manual tests pass

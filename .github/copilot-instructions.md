@@ -1,4 +1,4 @@
-# GitHub Copilot Custom Instructions (MVP v2.1)
+# GitHub Copilot Custom Instructions (MVP v2.2)
 
 You are a Senior Software Engineer. Optimize for **beginner-friendly MVP delivery**: correct logic, simple code, minimal dependencies.
 
@@ -16,11 +16,23 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
 - Use **TODO** markers for decisions you cannot infer.
 - Keep code **complete and runnable**.
 
-## 2) Project Overview (Attendance Web App — MERN, MVP v2.1, NO Anti-fraud)
+---
+
+## 2) Project Overview (Attendance Web App — MERN, MVP v2.2, NO Anti-fraud)
+
 ### Roles
-- **ADMIN**: manage users, holidays, company reports
-- **MANAGER**: approve requests, team matrix/reports
-- **EMPLOYEE**: check-in/out, view history, create requests
+- **ADMIN**:
+  - Manage users and holidays
+  - Company/team reports + matrix
+  - NEW: Member Management (today activity, edit member, reset password, filter by team/company)
+- **MANAGER**:
+  - Approve requests
+  - Team matrix/reports
+  - NEW: View team members today activity + member detail (team scope only)
+- **EMPLOYEE**:
+  - Check-in/out
+  - View history
+  - Create requests
 
 ### In scope (MVP)
 - Auth (login + JWT + me)
@@ -30,9 +42,18 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
 - Timesheet matrix (team/company)
 - Monthly report + **Excel export (.xlsx)**
 - Holidays (basic)
+- NEW (v2.2): Member Management
+  - Teams directory: GET /teams
+  - Today activity: GET /attendance/today?scope=team|company&teamId?
+  - Member detail: GET /users/:id (manager/admin, team scope for manager)
+  - Member monthly: GET /attendance/user/:id?month=YYYY-MM (manager/admin, team scope for manager)
+  - Admin edit member: PATCH /admin/users/:id (whitelist)
+  - Admin reset password: POST /admin/users/:id/reset-password (admin types password)
 
 ### Out of scope
-- Anti-fraud (IP/GPS/QR), realtime, complex shifts/break tracking, payroll.
+- Anti-fraud (IP/GPS/QR/device restriction), realtime, complex shifts/break tracking, payroll.
+
+---
 
 ## 3) Tech Stack
 ### Backend
@@ -44,6 +65,8 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
 - React + Vite
 - Axios/fetch
 - Simple UI (tables/forms)
+
+---
 
 ## 4) Business Rules (Source of Truth)
 - Timezone: **Asia/Ho_Chi_Minh (GMT+7)** for all business logic.
@@ -59,36 +82,4 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
   - Today + in != null + out == null => **WORKING**
   - Past day + in != null + out == null => **MISSING_CHECKOUT**
   - Past workday + no record => **ABSENT**
-  - Weekend/Holiday => **WEEKEND/HOLIDAY**
-  - Today/Future + no record => **null** (not ABSENT yet)
-
-## 5) Repo Structure (Guideline)
-- `server/src/{models,routes,controllers,services,middlewares,utils}`
-- `client/src/{api,pages,components,context,utils}`
-
-## 6) Error Handling & Security
-- Use correct HTTP codes (400/401/403/404/409/500).
-- Return consistent JSON errors: `{ "message": "..." }`.
-- Never store raw passwords; hash with `bcrypt`.
-- JWT: verify on protected routes; keep payload minimal (userId, role).
-- Validate inputs on auth + write endpoints; enforce RBAC.
-
-## 7) Language
-- Respond in **Vietnamese** by default.
-- Use **English only** for code blocks/comments.
-
-## 8) Doc-First Requirement (MUST READ BEFORE CODING)
-- Read relevant docs before generating code. If unclear, **ask** or state the simplest assumption.
-- Reading order (optimized for 4-day delivery):
-  1) `ROADMAP.md`
-  2) `MVP_SCOPE.md`
-  3) `RULES.md`
-  4) `DATA_DICTIONARY.md`
-  5) `API_SPEC.md`
-  6) `TEST_CHECKLIST.md`
-
-### Conflict resolution
-- `RULES.md` wins for business logic.
-- `API_SPEC.md` wins for endpoint shapes.
-- `DATA_DICTIONARY.md` wins for DB fields/types/indexes.
-- If still unclear: ask instead of guessing.
+  - Week
