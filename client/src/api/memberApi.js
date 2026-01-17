@@ -1,0 +1,111 @@
+/**
+ * Member Management API Layer
+ * 
+ * Endpoints:
+ * - GET /api/teams - Teams directory
+ * - GET /api/attendance/today - Today activity (scope, teamId)
+ * - GET /api/users/:id - User detail
+ * - GET /api/attendance/user/:id - User attendance history
+ * - PATCH /api/admin/users/:id - Update user (Admin only)
+ * - POST /api/admin/users/:id/reset-password - Reset password (Admin only)
+ * 
+ * @see API_SPEC.md for detailed specifications
+ */
+
+import client from './client';
+
+// ============================================
+// TEAMS DIRECTORY
+// ============================================
+
+/**
+ * Get all teams.
+ * Roles: EMPLOYEE | MANAGER | ADMIN
+ * @returns {Promise} { items: [{ _id, name }] }
+ */
+export const getTeams = () => client.get('/teams');
+
+
+// ============================================
+// TODAY ACTIVITY
+// ============================================
+
+/**
+ * Get today's attendance for team/company.
+ * Roles: MANAGER | ADMIN
+ * 
+ * Behavior:
+ * - MANAGER: scope forced to 'team', uses token.teamId (teamId param ignored)
+ * - ADMIN: scope='company' (all users) OR scope='team' (requires teamId)
+ * 
+ * @param {Object} params - Query parameters
+ * @param {string} params.scope - 'company' | 'team'
+ * @param {string} [params.teamId] - Required when scope='team' for Admin
+ * @returns {Promise} { 
+ *   date: "YYYY-MM-DD", 
+ *   items: [{ 
+ *     user: { _id, employeeCode, name, email, ... },
+ *     attendance: { date, checkInAt, checkOutAt } | null,
+ *     computed: { status, lateMinutes }
+ *   }] 
+ * }
+ */
+export const getTodayAttendance = (params) =>
+    client.get('/attendance/today', { params });
+
+
+// ============================================
+// USER DETAIL
+// ============================================
+
+/**
+ * Get user by ID.
+ * Roles: MANAGER (same-team) | ADMIN
+ * @param {string} id - User ID
+ * @returns {Promise} { user: { _id, employeeCode, name, email, ... } }
+ */
+export const getUserById = (id) => client.get(`/users/${id}`);
+
+
+// ============================================
+// USER ATTENDANCE HISTORY
+// ============================================
+
+/**
+ * Get attendance history for a user by month.
+ * Roles: MANAGER (same-team) | ADMIN
+ * @param {string} id - User ID
+ * @param {string} [month] - Month in YYYY-MM format (defaults to current month)
+ * @returns {Promise} { items: [{ date, checkInAt, checkOutAt, status, ... }] }
+ */
+export const getUserAttendance = (id, month) =>
+    client.get(`/attendance/user/${id}`, { params: { month } });
+
+
+// ============================================
+// ADMIN: UPDATE USER
+// ============================================
+
+/**
+ * Update user profile (Admin only).
+ * Allowed fields: name, email, username, teamId, isActive, startDate
+ * @param {string} id - User ID
+ * @param {Object} data - Fields to update (whitelist enforced server-side)
+ * @returns {Promise} { user: { ... updated user } }
+ */
+export const updateUser = (id, data) =>
+    client.patch(`/admin/users/${id}`, data);
+
+
+// ============================================
+// ADMIN: RESET PASSWORD
+// ============================================
+
+/**
+ * Reset user password (Admin only).
+ * @param {string} id - User ID
+ * @param {string} newPassword - New password (min 8 characters)
+ * @returns {Promise} { message: 'Password updated' }
+ */
+export const resetPassword = (id, newPassword) =>
+    client.post(`/admin/users/${id}/reset-password`, { newPassword });
