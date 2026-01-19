@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Table, Select, Spinner, Alert } from 'flowbite-react';
 import client from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import { getTeams } from '../api/memberApi';
 
 /**
  * TimesheetMatrixPage: Manager/Admin views team/company attendance matrix.
@@ -9,8 +10,16 @@ import { useAuth } from '../context/AuthContext';
  * Features:
  * - Matrix view: Rows (Employees) x Columns (Days of Month)
  * - Color-coded cells based on status (KEYS in RULES.md)
- * - Scope selector for Admin (Team vs Company)
+ * - Scope selector for Admin (Company vs specific Team)
  * - Month selector (Last 12 months)
+ * 
+ * Admin scope behavior:
+ * - Default: 'company' (Toàn công ty)
+ * - Can select specific team from dropdown
+ * - When team selected, API called with teamId param
+ * 
+ * Manager behavior:
+ * - Always uses /timesheet/team (backend uses token.teamId)
  */
 export default function TimesheetMatrixPage() {
     const { user } = useAuth();
@@ -23,12 +32,53 @@ export default function TimesheetMatrixPage() {
 
     // Filter states
     const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7));
-    const [scope, setScope] = useState('team'); // 'team' | 'company' (Admin only)
+    // NOTE: Initial scope may be wrong if user loads async (isAdmin = false initially)
+    // We use useEffect below to sync scope when isAdmin changes
+    const [scope, setScope] = useState('team');
+    const [selectedTeamId, setSelectedTeamId] = useState('');
 
-    // Force scope to 'team' if not admin (handle role change or reuse state)
+    // Teams dropdown for Admin
+    const [teams, setTeams] = useState([]);
+    const [teamsLoading, setTeamsLoading] = useState(false);
+    const [teamsError, setTeamsError] = useState('');
+
+    // Fetch teams on mount for Admin
     useEffect(() => {
-        if (!isAdmin && scope === 'company') setScope('team');
-    }, [isAdmin, scope]);
+        if (!isAdmin) return;
+
+        let cancelled = false;
+        setTeamsLoading(true);
+        setTeamsError('');
+
+        getTeams()
+            .then(res => {
+                if (cancelled) return;
+                setTeams(Array.isArray(res.data?.items) ? res.data.items : []);
+            })
+            .catch(err => {
+                if (cancelled) return;
+                console.error('Failed to load teams:', err);
+                setTeamsError('Không thể tải danh sách team');
+            })
+            .finally(() => {
+                if (!cancelled) setTeamsLoading(false);
+            });
+
+        return () => { cancelled = true; };
+    }, [isAdmin]);
+
+    // Sync scope when isAdmin changes (handles async user load race condition)
+    // - Admin: default to 'company' (avoids 400 error from /timesheet/team without teamId)
+    // - Manager: force to 'team'
+    useEffect(() => {
+        if (isAdmin && scope === 'team' && !selectedTeamId) {
+            // Admin just loaded, switch to company scope
+            setScope('company');
+        } else if (!isAdmin && scope === 'company') {
+            // Not admin but somehow in company scope, force back to team
+            setScope('team');
+        }
+    }, [isAdmin, scope, selectedTeamId]);
 
     // Data states
     const [data, setData] = useState({ days: [], rows: [] });
@@ -52,15 +102,38 @@ export default function TimesheetMatrixPage() {
         return options;
     }, [today]);
 
+    // Handle scope change from dropdown
+    const handleScopeChange = (value) => {
+        if (value === 'company') {
+            setScope('company');
+            setSelectedTeamId('');
+        } else {
+            // value is teamId
+            setScope('team');
+            setSelectedTeamId(value);
+        }
+    };
+
     // Fetch matrix data
     const fetchMatrix = useCallback(async (signal, showLoading = true) => {
         if (showLoading) setLoading(true);
         if (showLoading) setError('');
         try {
             const config = signal ? { signal } : undefined;
-            const endpoint = scope === 'company' && isAdmin
-                ? `/timesheet/company?month=${selectedMonth}`
-                : `/timesheet/team?month=${selectedMonth}`;
+
+            let endpoint;
+            if (isAdmin) {
+                if (scope === 'company') {
+                    // Admin viewing company-wide
+                    endpoint = `/timesheet/company?month=${selectedMonth}`;
+                } else {
+                    // Admin viewing specific team - MUST include teamId
+                    endpoint = `/timesheet/team?month=${selectedMonth}&teamId=${selectedTeamId}`;
+                }
+            } else {
+                // Manager - backend uses token.teamId automatically
+                endpoint = `/timesheet/team?month=${selectedMonth}`;
+            }
 
             const res = await client.get(endpoint, config);
             setData({
@@ -74,16 +147,26 @@ export default function TimesheetMatrixPage() {
             if (signal?.aborted) return;
             if (showLoading) setLoading(false);
         }
-    }, [selectedMonth, scope, isAdmin]);
+    }, [selectedMonth, scope, selectedTeamId, isAdmin]);
 
     // Fetch on filters change
+    // For Admin with team scope, only fetch if teamId is selected
     useEffect(() => {
+        // Skip if Admin selected team scope but hasn't chosen a team yet
+        if (isAdmin && scope === 'team' && !selectedTeamId) {
+            setLoading(false);
+            setError(''); // Reset error to avoid stale error display
+            setData({ days: [], rows: [] });
+            return;
+        }
+
         const controller = new AbortController();
         fetchMatrix(controller.signal, true);
         return () => controller.abort();
-    }, [fetchMatrix]);
+    }, [fetchMatrix, isAdmin, scope, selectedTeamId]);
 
     // Color mapping helper
+    // Status keys MUST match RULES.md (source of truth)
     const getStatusColor = (status) => {
         const colorMap = {
             ON_TIME: 'bg-green-200 text-green-800',
@@ -91,14 +174,14 @@ export default function TimesheetMatrixPage() {
             EARLY_LEAVE: 'bg-yellow-200 text-yellow-800',
             MISSING_CHECKOUT: 'bg-yellow-200 text-yellow-800',
             ABSENT: 'bg-gray-100 text-gray-500',
-            WEEKEND: 'bg-gray-300 text-gray-600',
-            HOLIDAY: 'bg-purple-200 text-purple-800',
+            WEEKEND_OR_HOLIDAY: 'bg-gray-300 text-gray-600', // Per RULES.md section 3.1
             WORKING: 'bg-blue-100 text-blue-800',
         };
         return colorMap[status] || 'bg-white text-gray-400';
     };
 
     // Status abbreviation helper
+    // Status keys MUST match RULES.md (source of truth)
     const getStatusAbbr = (status) => {
         const abbrMap = {
             ON_TIME: '✓',
@@ -106,8 +189,7 @@ export default function TimesheetMatrixPage() {
             EARLY_LEAVE: 'S', // Sớm
             MISSING_CHECKOUT: '?',
             ABSENT: 'V',    // Vắng
-            WEEKEND: '-',
-            HOLIDAY: 'L',   // Lễ
+            WEEKEND_OR_HOLIDAY: '-', // Per RULES.md section 3.1
             WORKING: 'W',
         };
         return abbrMap[status] || '';
@@ -122,12 +204,22 @@ export default function TimesheetMatrixPage() {
                     {/* Scope Selector (Admin only) */}
                     {isAdmin && (
                         <Select
-                            value={scope}
-                            onChange={e => setScope(e.target.value)}
-                            disabled={loading}
+                            value={scope === 'company' ? 'company' : (selectedTeamId || 'company')}
+                            onChange={e => handleScopeChange(e.target.value)}
+                            disabled={loading || teamsLoading}
                         >
-                            <option value="team">Team của tôi</option>
                             <option value="company">Toàn công ty</option>
+                            {teamsError ? (
+                                <option disabled>(Không thể tải teams)</option>
+                            ) : teamsLoading ? (
+                                <option disabled>Đang tải teams...</option>
+                            ) : (
+                                teams.map(team => (
+                                    <option key={team._id} value={team._id}>
+                                        {team.name}
+                                    </option>
+                                ))
+                            )}
                         </Select>
                     )}
 
@@ -203,7 +295,7 @@ export default function TimesheetMatrixPage() {
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-red-200 border"></span> Đi muộn (M)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-yellow-200 border"></span> Về sớm/Thiếu checkout (S/?)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-100 border"></span> Vắng (V)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-purple-200 border"></span> Lễ (L)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-300 border"></span> Cuối tuần/Lễ (-)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-blue-100 border"></span> Đang làm (W)</div>
                 </div>
             )}
