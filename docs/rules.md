@@ -105,7 +105,7 @@ On approve:
   - LATE => orange/red
   - WORKING => blue
   - MISSING_CHECKOUT => yellow
-  - ABSENT => red
+  - ABSENT => grey (lighter shade, distinct from weekend)
   - null => empty/neutral
 
 ## 7) Member Management Rules (NEW v2.2)

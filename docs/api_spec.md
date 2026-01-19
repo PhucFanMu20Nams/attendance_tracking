@@ -226,8 +226,16 @@ Response:
 
 # 4) Timesheet Matrix
 
-## GET /timesheet/team?month=YYYY-MM
+## GET /timesheet/team?month=YYYY-MM&teamId?
 Roles: MANAGER | ADMIN
+
+Query params:
+- month: YYYY-MM (optional, defaults to current month)
+- teamId: ObjectId (REQUIRED for ADMIN, ignored for MANAGER)
+
+Behavior:
+- MANAGER: uses token.teamId (teamId param ignored)
+- ADMIN: MUST specify teamId param, else 400
 
 Response:
 - days: [1..N]
