@@ -52,7 +52,7 @@ export default function LoginPage() {
                 <h1 className="text-2xl font-bold text-center mb-4">Attendance App</h1>
 
                 {error && (
-                    <Alert color="failure" className="mb-4">
+                    <Alert color="failure" className="mb-4" role="alert">
                         {error}
                     </Alert>
                 )}
