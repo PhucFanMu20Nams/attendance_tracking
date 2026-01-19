@@ -124,6 +124,7 @@ export default function MyAttendancePage() {
                     value={selectedMonth}
                     onChange={(e) => setSelectedMonth(e.target.value)}
                     className="w-full sm:w-48"
+                    aria-label="Chọn tháng xem lịch sử chấm công"
                 >
                     {monthOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>
