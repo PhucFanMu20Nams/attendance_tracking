@@ -96,8 +96,7 @@ export default function MyAttendancePage() {
             EARLY_LEAVE: { color: 'warning', label: 'Về sớm' },
             MISSING_CHECKOUT: { color: 'failure', label: 'Thiếu checkout' },
             ABSENT: { color: 'failure', label: 'Vắng mặt' },
-            WEEKEND: { color: 'gray', label: 'Cuối tuần' },
-            HOLIDAY: { color: 'purple', label: 'Nghỉ lễ' },
+            WEEKEND_OR_HOLIDAY: { color: 'gray', label: 'Nghỉ' },
         };
 
         // Handle null/undefined status based on date
