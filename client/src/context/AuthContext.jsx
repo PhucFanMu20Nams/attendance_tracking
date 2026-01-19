@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import client from '../api/client';
 
 const AuthContext = createContext(null);
@@ -12,6 +13,7 @@ const AuthContext = createContext(null);
  * - logout(): clear auth and redirect to /login
  */
 export function AuthProvider({ children }) {
+    const navigate = useNavigate();
     const [user, setUser] = useState(null);
     const [token, setToken] = useState(() => localStorage.getItem('token'));
     const [loading, setLoading] = useState(true);
@@ -44,6 +46,8 @@ export function AuthProvider({ children }) {
                 }
             })
             .finally(() => {
+                // Guard: Don't update state if request was aborted (StrictMode double-mount)
+                if (controller.signal.aborted) return;
                 setLoading(false);
             });
 
@@ -65,14 +69,15 @@ export function AuthProvider({ children }) {
     }, []);
 
     /**
-     * Logout: clear token from storage, reset state, redirect to /login.
+     * Logout: clear token from storage, reset state, navigate to /login.
+     * Uses navigate() for SPA-friendly routing without full page reload.
      */
     const logout = useCallback(() => {
         localStorage.removeItem('token');
         setToken(null);
         setUser(null);
-        window.location.href = '/login';
-    }, []);
+        navigate('/login', { replace: true });
+    }, [navigate]);
 
     return (
         <AuthContext.Provider value={{ user, token, loading, login, logout }}>
