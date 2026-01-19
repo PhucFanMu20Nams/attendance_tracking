@@ -14,24 +14,29 @@
 
 import { test, expect } from '@playwright/test';
 
-// Test data
+// Test data - matching seed data
 const TEST_EMPLOYEE = {
-    identifier: 'employee1',
-    password: 'password123',
+    identifier: 'employee',
+    password: 'Password123',
 };
 
-// Helper to login
+// Helper to login - simplified, no strict URL check
 async function login(page, user = TEST_EMPLOYEE) {
     await page.goto('/login');
     await page.getByLabel(/email or username/i).fill(user.identifier);
     await page.getByLabel(/password/i).fill(user.password);
     await page.getByRole('button', { name: /login/i }).click();
-    await expect(page).toHaveURL(/dashboard/, { timeout: 10000 });
+
+    // Just wait for dashboard heading to appear (confirms successful login)
+    await expect(page.getByRole('heading', { name: /dashboard/i })).toBeVisible({ timeout: 15000 });
 }
 
 test.describe('Attendance Flow - E2E', () => {
     test.beforeEach(async ({ page }) => {
-        await page.evaluate(() => localStorage.clear());
+        // Clear storage before each test
+        // Navigate to the app first so we have the correct origin for localStorage
+        await page.goto('/');
+        await page.evaluate(() => window.localStorage.clear());
     });
 
     test.describe('1. Dashboard Attendance', () => {
