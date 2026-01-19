@@ -122,3 +122,6 @@ dist
 # Vite
 dist-ssr
 *.local
+# Playwright
+playwright-report/
+test-results/
