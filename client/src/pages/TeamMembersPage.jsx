@@ -4,7 +4,8 @@ import {
     Table, Button, Spinner, Alert, Badge
 } from 'flowbite-react';
 import { HiRefresh, HiEye } from 'react-icons/hi';
-import { getTodayAttendance } from '../api/memberApi';
+import { getTodayAttendance, getTeams } from '../api/memberApi';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * TeamMembersPage: Manager views list of same-team members with today's activity.
@@ -20,6 +21,7 @@ import { getTodayAttendance } from '../api/memberApi';
  */
 export default function TeamMembersPage() {
     const navigate = useNavigate();
+    const { user } = useAuth();
     const isMounted = useRef(true);
 
     // Get current date in GMT+7 for display
@@ -37,6 +39,7 @@ export default function TeamMembersPage() {
     // Data states
     const [members, setMembers] = useState([]);
     const [todayDate, setTodayDate] = useState('');
+    const [teamName, setTeamName] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
@@ -71,6 +74,23 @@ export default function TeamMembersPage() {
             isMounted.current = false;
         };
     }, []);
+
+    // Fetch team name for display (Manager's team)
+    useEffect(() => {
+        const fetchTeamName = async () => {
+            if (!user?.teamId) return;
+            try {
+                const res = await getTeams();
+                const teams = res.data.items || [];
+                const myTeam = teams.find(t => t._id === user.teamId);
+                if (myTeam) setTeamName(myTeam.name);
+            } catch (err) {
+                // Silently fail - team name is optional display
+                console.error('Failed to fetch team name:', err);
+            }
+        };
+        fetchTeamName();
+    }, [user?.teamId]);
 
     // Fetch team members
     const fetchMembers = useCallback(async () => {
@@ -136,6 +156,9 @@ export default function TeamMembersPage() {
             <div className="flex justify-between items-center mb-4">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-800">Team Members</h1>
+                    {teamName && (
+                        <p className="text-sm font-medium text-cyan-600">Team: {teamName}</p>
+                    )}
                     {todayDate && (
                         <p className="text-sm text-gray-500">Today: {todayDate}</p>
                     )}
