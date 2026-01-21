@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Table, Badge, Select, Spinner, Alert } from 'flowbite-react';
+import { Table, Select, Spinner, Alert } from 'flowbite-react';
 import client from '../api/client';
+import { PageHeader, StatusBadge } from '../components/ui';
 
 /**
  * MyAttendancePage: Monthly attendance history table with status badges.
@@ -86,44 +87,15 @@ export default function MyAttendancePage() {
         });
     };
 
-    // Status badge color mapping
-    // Per rule: When status === null, distinguish date > today (future) vs date === today (not checked in yet)
-    const getStatusBadge = (status, itemDate) => {
-        const statusConfig = {
-            WORKING: { color: 'success', label: 'Đang làm' },
-            ON_TIME: { color: 'success', label: 'Đúng giờ' },
-            LATE: { color: 'warning', label: 'Đi muộn' },
-            EARLY_LEAVE: { color: 'warning', label: 'Về sớm' },
-            MISSING_CHECKOUT: { color: 'failure', label: 'Thiếu checkout' },
-            ABSENT: { color: 'failure', label: 'Vắng mặt' },
-            WEEKEND_OR_HOLIDAY: { color: 'gray', label: 'Nghỉ' },
-        };
 
-        // Handle null/undefined status based on date
-        if (!status) {
-            if (itemDate > today) {
-                return <Badge color="gray">Chưa tới</Badge>;
-            } else if (itemDate === today) {
-                return <Badge color="gray">Chưa check-in</Badge>;
-            } else {
-                // Past day with no status - likely absent or no record
-                return <Badge color="failure">Vắng mặt</Badge>;
-            }
-        }
-
-        const config = statusConfig[status] || { color: 'gray', label: status };
-        return <Badge color={config.color}>{config.label}</Badge>;
-    };
 
     return (
         <div>
-            {/* Page Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
-                <h1 className="text-2xl font-bold text-gray-800">Lịch sử chấm công</h1>
+            <PageHeader title="Lịch sử chấm công">
                 <Select
                     value={selectedMonth}
                     onChange={(e) => setSelectedMonth(e.target.value)}
-                    className="w-full sm:w-48"
+                    className="w-48"
                     aria-label="Chọn tháng xem lịch sử chấm công"
                 >
                     {monthOptions.map((opt) => (
@@ -132,7 +104,7 @@ export default function MyAttendancePage() {
                         </option>
                     ))}
                 </Select>
-            </div>
+            </PageHeader>
 
             {/* Error Alert */}
             {error && (
@@ -170,7 +142,9 @@ export default function MyAttendancePage() {
                                     </Table.Cell>
                                     <Table.Cell>{formatTime(item.checkInAt)}</Table.Cell>
                                     <Table.Cell>{formatTime(item.checkOutAt)}</Table.Cell>
-                                    <Table.Cell>{getStatusBadge(item.status, item.date)}</Table.Cell>
+                                    <Table.Cell>
+                                        <StatusBadge status={item.status} itemDate={item.date} today={today} />
+                                    </Table.Cell>
                                     <Table.Cell>
                                         {item.lateMinutes > 0 ? (
                                             <span className="text-yellow-600">

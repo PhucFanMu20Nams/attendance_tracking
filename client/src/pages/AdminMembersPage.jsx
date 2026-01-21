@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-    Table, Button, Modal, Spinner, Alert, Badge, Select, Label, TextInput, Toast
+    Table, Button, Modal, Spinner, Alert, Select, Label, TextInput, Toast
 } from 'flowbite-react';
 import { HiRefresh, HiPencil, HiKey, HiEye, HiCheck, HiX } from 'react-icons/hi';
 import { useNavigate } from 'react-router-dom';
 import {
     getTeams, getTodayAttendance, updateUser, resetPassword
 } from '../api/memberApi';
+import { PageHeader, StatusBadge } from '../components/ui';
 
 /**
  * AdminMembersPage: Admin views all members with today's activity.
@@ -49,26 +50,7 @@ export default function AdminMembersPage() {
     // Toast state
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
-    // Status badge colors per RULES.md line 102-109
-    const statusColors = {
-        'ON_TIME': 'success',      // green
-        'LATE': 'warning',         // orange/red → Flowbite warning is orange
-        'WORKING': 'info',         // blue
-        'MISSING_CHECKOUT': 'warning', // yellow per RULES.md
-        'WEEKEND_OR_HOLIDAY': 'gray',  // grey per RULES.md
-        'ABSENT': 'failure',           // red
-        null: 'gray'                   // neutral
-    };
 
-    const statusLabels = {
-        'ON_TIME': 'On Time',
-        'LATE': 'Late',
-        'WORKING': 'Working',
-        'MISSING_CHECKOUT': 'Missing Checkout',
-        'WEEKEND_OR_HOLIDAY': 'Weekend/Holiday',
-        'ABSENT': 'Absent',
-        null: 'Not Checked In'
-    };
 
     // Fetch teams on mount
     useEffect(() => {
@@ -223,15 +205,13 @@ export default function AdminMembersPage() {
     };
 
     return (
-        <div className="p-4">
-            {/* Header */}
-            <div className="flex justify-between items-center mb-4">
-                <h1 className="text-2xl font-bold text-gray-800">Members Management</h1>
+        <div>
+            <PageHeader title="Quản lý nhân viên">
                 <Button color="light" onClick={() => fetchMembers()}>
                     <HiRefresh className="mr-2 h-4 w-4" />
-                    Refresh
+                    Làm mới
                 </Button>
-            </div>
+            </PageHeader>
 
             {/* Filters */}
             <div className="flex gap-4 mb-4">
@@ -322,9 +302,7 @@ export default function AdminMembersPage() {
                                         {item.user.email}
                                     </Table.Cell>
                                     <Table.Cell>
-                                        <Badge color={statusColors[item.computed?.status] || 'gray'}>
-                                            {statusLabels[item.computed?.status] || 'Unknown'}
-                                        </Badge>
+                                        <StatusBadge status={item.computed?.status} />
                                     </Table.Cell>
                                     <Table.Cell>
                                         {formatTime(item.attendance?.checkInAt)}

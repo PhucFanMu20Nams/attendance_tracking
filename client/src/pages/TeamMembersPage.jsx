@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-    Table, Button, Spinner, Alert, Badge
+    Table, Button, Spinner, Alert
 } from 'flowbite-react';
 import { HiRefresh, HiEye } from 'react-icons/hi';
 import { getTodayAttendance, getTeams } from '../api/memberApi';
 import { useAuth } from '../context/AuthContext';
+import { PageHeader, StatusBadge } from '../components/ui';
 
 /**
  * TeamMembersPage: Manager views list of same-team members with today's activity.
@@ -46,26 +47,7 @@ export default function TeamMembersPage() {
     // Race condition protection
     const requestIdRef = useRef(0);
 
-    // Status badge colors per RULES.md line 102-109
-    const statusColors = {
-        'ON_TIME': 'success',      // green
-        'LATE': 'warning',         // orange
-        'WORKING': 'info',         // blue
-        'MISSING_CHECKOUT': 'warning', // yellow per RULES.md
-        'WEEKEND_OR_HOLIDAY': 'gray',  // grey per RULES.md
-        'ABSENT': 'failure',           // red
-        null: 'gray'                   // neutral / not checked in yet
-    };
 
-    const statusLabels = {
-        'ON_TIME': 'On Time',
-        'LATE': 'Late',
-        'WORKING': 'Working',
-        'MISSING_CHECKOUT': 'Missing Checkout',
-        'WEEKEND_OR_HOLIDAY': 'Weekend/Holiday',
-        'ABSENT': 'Absent',
-        null: 'Not Checked In'
-    };
 
     // Cleanup on unmount
     useEffect(() => {
@@ -151,23 +133,16 @@ export default function TeamMembersPage() {
     };
 
     return (
-        <div className="p-4">
-            {/* Header */}
-            <div className="flex justify-between items-center mb-4">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-800">Team Members</h1>
-                    {teamName && (
-                        <p className="text-sm font-medium text-cyan-600">Team: {teamName}</p>
-                    )}
-                    {todayDate && (
-                        <p className="text-sm text-gray-500">Today: {todayDate}</p>
-                    )}
-                </div>
+        <div>
+            <PageHeader
+                title="Thành viên nhóm"
+                subtitle={teamName ? `Team: ${teamName} • Hôm nay: ${todayDate}` : `Hôm nay: ${todayDate}`}
+            >
                 <Button color="light" onClick={fetchMembers} disabled={loading}>
                     <HiRefresh className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                    Refresh
+                    Làm mới
                 </Button>
-            </div>
+            </PageHeader>
 
             {/* Error Alert */}
             {error && (
@@ -209,9 +184,7 @@ export default function TeamMembersPage() {
                                         {item.user.email}
                                     </Table.Cell>
                                     <Table.Cell>
-                                        <Badge color={statusColors[item.computed?.status] || 'gray'}>
-                                            {statusLabels[item.computed?.status] || 'Unknown'}
-                                        </Badge>
+                                        <StatusBadge status={item.computed?.status} />
                                     </Table.Cell>
                                     <Table.Cell>
                                         {formatTime(item.attendance?.checkInAt)}
