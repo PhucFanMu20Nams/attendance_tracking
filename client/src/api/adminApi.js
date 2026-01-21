@@ -1,0 +1,61 @@
+/**
+ * Admin Management API Layer
+ * 
+ * Endpoints:
+ * - GET /api/admin/holidays?year=YYYY - List holidays by year
+ * - POST /api/admin/holidays - Create holiday
+ * - POST /api/admin/users - Create user
+ * 
+ * @see API_SPEC.md for detailed specifications
+ */
+
+import client from './client';
+
+// ============================================
+// HOLIDAYS MANAGEMENT
+// ============================================
+
+/**
+ * Get holidays by year.
+ * Roles: ADMIN only
+ * @param {string} [year] - Year in YYYY format (defaults to current year GMT+7)
+ * @param {Object} [config] - Optional axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { items: [{ _id, date, name }] }
+ */
+export const getHolidays = (year, config) =>
+    client.get('/admin/holidays', { params: { year }, ...config });
+
+/**
+ * Create a new holiday.
+ * Roles: ADMIN only
+ * @param {Object} data - Holiday data
+ * @param {string} data.date - Date in YYYY-MM-DD format
+ * @param {string} data.name - Holiday name
+ * @returns {Promise} { _id, date, name }
+ */
+export const createHoliday = (data) =>
+    client.post('/admin/holidays', data);
+
+
+// ============================================
+// USER MANAGEMENT
+// ============================================
+
+/**
+ * Create a new user.
+ * Roles: ADMIN only
+ * 
+ * @param {Object} data - User data
+ * @param {string} data.employeeCode - Required, unique
+ * @param {string} data.name - Required
+ * @param {string} data.email - Required, unique
+ * @param {string} data.password - Required, min 8 characters
+ * @param {string} data.role - Required: 'ADMIN' | 'MANAGER' | 'EMPLOYEE'
+ * @param {string} [data.username] - Optional, unique
+ * @param {string} [data.teamId] - Optional, ObjectId
+ * @param {string} [data.startDate] - Optional, ISO date string
+ * @param {boolean} [data.isActive] - Optional, default true
+ * @returns {Promise} { user: { _id, employeeCode, name, email, ... } }
+ */
+export const createUser = (data) =>
+    client.post('/admin/users', data);
