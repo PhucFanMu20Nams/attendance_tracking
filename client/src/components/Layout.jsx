@@ -1,7 +1,7 @@
 import { Navbar, Sidebar, Dropdown, Avatar } from 'flowbite-react';
 import { Outlet, NavLink, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { HiHome, HiClock, HiDocumentText, HiCheckCircle, HiTable, HiChartBar, HiUsers } from 'react-icons/hi';
+import { HiHome, HiClock, HiDocumentText, HiCheckCircle, HiTable, HiChartBar, HiUsers, HiClipboardCheck } from 'react-icons/hi';
 
 /**
  * Layout component: Main app layout with Navbar and Sidebar.
@@ -41,7 +41,8 @@ export default function Layout() {
             {/* Top Navbar */}
             <Navbar fluid className="border-b">
                 <Navbar.Brand as={Link} to="/dashboard">
-                    <span className="text-xl font-semibold">Attendance</span>
+                    <HiClipboardCheck className="mr-2 h-6 w-6 text-primary-600" />
+                    <span className="text-xl font-bold text-gray-900">Attendance</span>
                 </Navbar.Brand>
                 <div className="flex md:order-2">
                     <Dropdown
@@ -59,7 +60,7 @@ export default function Layout() {
 
             <div className="flex">
                 {/* Left Sidebar */}
-                <Sidebar className="h-[calc(100vh-65px)] w-64">
+                <Sidebar className="h-[calc(100vh-65px)] w-64 border-r border-gray-200">
                     <Sidebar.Items>
                         <Sidebar.ItemGroup>
                             {visibleItems.map((item) => (
@@ -77,8 +78,10 @@ export default function Layout() {
                 </Sidebar>
 
                 {/* Main Content Area */}
-                <main className="flex-1 p-6">
-                    <Outlet />
+                <main className="flex-1 p-6 overflow-auto">
+                    <div className="max-w-7xl mx-auto">
+                        <Outlet />
+                    </div>
                 </main>
             </div>
         </div>
