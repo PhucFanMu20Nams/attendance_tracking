@@ -291,3 +291,167 @@ export const resetPassword = async (req, res) => {
     }
 };
 
+/**
+ * POST /api/admin/users
+ * Create new user (Admin only).
+ * 
+ * Required: employeeCode, name, email, password, role
+ * Optional: username, teamId, startDate, isActive (default true)
+ * 
+ * Per API_SPEC.md#L338-L353
+ */
+export const createUser = async (req, res) => {
+    try {
+        // RBAC: ADMIN only (defense-in-depth, route also has middleware)
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const { employeeCode, name, email, username, password, role, teamId, startDate, isActive } = req.body;
+
+        // ============================================
+        // VALIDATION: Required fields (with type check - consistent with resetPassword)
+        // ============================================
+        if (!employeeCode || typeof employeeCode !== 'string' || !employeeCode.trim()) {
+            return res.status(400).json({ message: 'Employee code is required' });
+        }
+        if (!name || typeof name !== 'string' || !name.trim()) {
+            return res.status(400).json({ message: 'Name is required' });
+        }
+        if (!email || typeof email !== 'string' || !email.trim()) {
+            return res.status(400).json({ message: 'Email is required' });
+        }
+        if (!password || typeof password !== 'string') {
+            return res.status(400).json({ message: 'Password is required' });
+        }
+        if (password.length < 8) {
+            return res.status(400).json({ message: 'Password must be at least 8 characters' });
+        }
+        if (!role) {
+            return res.status(400).json({ message: 'Role is required' });
+        }
+        if (!['ADMIN', 'MANAGER', 'EMPLOYEE'].includes(role)) {
+            return res.status(400).json({ message: 'Invalid role. Must be ADMIN, MANAGER, or EMPLOYEE' });
+        }
+
+        // ============================================
+        // VALIDATION: Optional fields
+        // ============================================
+        // Validate teamId format if provided
+        if (teamId && !mongoose.Types.ObjectId.isValid(teamId)) {
+            return res.status(400).json({ message: 'Invalid teamId format' });
+        }
+
+        // Validate startDate if provided (consistent with updateUser pattern)
+        let parsedStartDate;
+        if (startDate !== undefined) {
+            parsedStartDate = new Date(startDate);
+            if (Number.isNaN(parsedStartDate.getTime())) {
+                return res.status(400).json({ message: 'Invalid startDate' });
+            }
+        }
+
+        // Validate isActive if provided (must be boolean)
+        let isActiveNorm = true;
+        if (isActive !== undefined) {
+            if (typeof isActive !== 'boolean') {
+                return res.status(400).json({ message: 'isActive must be boolean' });
+            }
+            isActiveNorm = isActive;
+        }
+
+        // Normalize username (empty string after trim → undefined to avoid sparse index issue)
+        const usernameTrim = typeof username === 'string' ? username.trim() : undefined;
+        const usernameNorm = usernameTrim || undefined;
+
+        // ============================================
+        // PASSWORD HASHING (same pattern as authService.js)
+        // ============================================
+        const passwordHash = await bcrypt.hash(password, 10);
+
+        // ============================================
+        // CREATE USER
+        // ============================================
+        const user = await User.create({
+            employeeCode: employeeCode.trim(),
+            name: name.trim(),
+            email: email.trim().toLowerCase(),
+            username: usernameNorm,
+            passwordHash,
+            role,
+            teamId: teamId || undefined,
+            startDate: parsedStartDate,
+            isActive: isActiveNorm
+        });
+
+        // ============================================
+        // RESPONSE: Sanitized (no passwordHash, __v)
+        // Per API_SPEC.md security rules
+        // ============================================
+        return res.status(201).json({
+            user: {
+                _id: user._id,
+                employeeCode: user.employeeCode,
+                name: user.name,
+                email: user.email,
+                username: user.username,
+                role: user.role,
+                teamId: user.teamId,
+                isActive: user.isActive,
+                startDate: user.startDate,
+                createdAt: user.createdAt,
+                updatedAt: user.updatedAt
+            }
+        });
+    } catch (error) {
+        // ============================================
+        // ERROR HANDLING
+        // ============================================
+        
+        // Handle duplicate key errors (MongoDB 11000)
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyPattern)[0];
+            return res.status(409).json({ 
+                message: `${field.charAt(0).toUpperCase() + field.slice(1)} already exists` 
+            });
+        }
+
+        // OWASP A05/A09: Verbose logging in dev, generic in prod
+        if (process.env.NODE_ENV !== 'production') {
+            console.error('createUser error:', error);
+        } else {
+            console.error('createUser error');
+        }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+/**
+ * GET /api/admin/users
+ * Get all users (Admin only).
+ * 
+ * Response: { items: [...sanitized users...] }
+ * Per API_SPEC.md#L355-L372
+ */
+export const getAllUsers = async (req, res) => {
+    try {
+        // RBAC: ADMIN only (defense-in-depth)
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const users = await User.find({})
+            .select('_id employeeCode name email username role teamId isActive startDate createdAt updatedAt')
+            .sort({ employeeCode: 1 })
+            .lean();
+
+        return res.status(200).json({ items: users });
+    } catch (error) {
+        // OWASP A05/A09: Verbose logging in dev, generic in prod
+        if (process.env.NODE_ENV !== 'production') {
+            console.error('getAllUsers error:', error);
+        } else {
+            console.error('getAllUsers error');
+        }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
