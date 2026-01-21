@@ -2,6 +2,7 @@ import * as attendanceService from '../services/attendanceService.js';
 import { getTodayDateKey } from '../utils/dateUtils.js';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
+import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 
 /**
  * POST /api/attendance/check-in
@@ -18,9 +19,11 @@ export const checkIn = async (req, res) => {
     });
   } catch (error) {
     const statusCode = error.statusCode || 500;
-    return res.status(statusCode).json({
-      message: error.message || 'Failed to check in'
-    });
+    // OWASP A09: Don't expose internal error details for 5xx errors
+    const message = statusCode < 500
+      ? (error.message || 'Failed to check in')
+      : 'Failed to check in';
+    return res.status(statusCode).json({ message });
   }
 };
 
@@ -39,9 +42,11 @@ export const checkOut = async (req, res) => {
     });
   } catch (error) {
     const statusCode = error.statusCode || 500;
-    return res.status(statusCode).json({
-      message: error.message || 'Failed to check out'
-    });
+    // OWASP A09: Don't expose internal error details for 5xx errors
+    const message = statusCode < 500
+      ? (error.message || 'Failed to check out')
+      : 'Failed to check out';
+    return res.status(statusCode).json({ message });
   }
 };
 
@@ -53,7 +58,11 @@ export const getMyAttendance = async (req, res) => {
   try {
     const userId = req.user._id;
 
+    // Normalize query param (handle whitespace + array edge cases)
     let month = req.query.month;
+    if (Array.isArray(month)) month = month[0];
+    month = typeof month === 'string' ? month.trim() : undefined;
+
     if (!month) {
       const today = getTodayDateKey();
       month = today.substring(0, 7); // Extract "YYYY-MM"
@@ -66,9 +75,8 @@ export const getMyAttendance = async (req, res) => {
       });
     }
 
-    // TODO: Fetch holidays from database in future
-    // For MVP, pass empty Set (no holidays configured yet)
-    const holidayDates = new Set();
+    // Fetch holidays from database for this month
+    const holidayDates = await getHolidayDatesForMonth(month);
 
     const items = await attendanceService.getMonthlyHistory(userId, month, holidayDates);
 
@@ -77,9 +85,11 @@ export const getMyAttendance = async (req, res) => {
     });
   } catch (error) {
     const statusCode = error.statusCode || 500;
-    return res.status(statusCode).json({
-      message: error.message || 'Failed to fetch attendance history'
-    });
+    // OWASP A09: Don't expose internal error details for 5xx errors
+    const message = statusCode < 500
+      ? (error.message || 'Failed to fetch attendance history')
+      : 'Failed to fetch attendance history';
+    return res.status(statusCode).json({ message });
   }
 };
 
@@ -94,7 +104,13 @@ export const getMyAttendance = async (req, res) => {
 export const getTodayAttendance = async (req, res) => {
   try {
     const { role, teamId: userTeamId } = req.user;
-    let { scope, teamId } = req.query;
+    // Normalize query params (handle whitespace + array edge cases)
+    let scope = req.query.scope;
+    let teamId = req.query.teamId;
+    if (Array.isArray(scope)) scope = scope[0];
+    if (Array.isArray(teamId)) teamId = teamId[0];
+    scope = typeof scope === 'string' ? scope.trim() : undefined;
+    teamId = typeof teamId === 'string' ? teamId.trim() : undefined;
 
     // RBAC: Manager can only view team scope
     if (role === 'MANAGER') {
@@ -130,6 +146,9 @@ export const getTodayAttendance = async (req, res) => {
             message: 'Invalid teamId format'
           });
         }
+      } else {
+        // Defense-in-depth: ensure teamId is not passed to service for company scope
+        teamId = undefined;
       }
     }
     // Employee not allowed
@@ -139,8 +158,9 @@ export const getTodayAttendance = async (req, res) => {
       });
     }
 
-    // TODO: Fetch holidays from database in future
-    const holidayDates = new Set();
+    // Fetch holidays for current month (GMT+7)
+    const today = getTodayDateKey();
+    const holidayDates = await getHolidayDatesForMonth(today.substring(0, 7));
 
     const result = await attendanceService.getTodayActivity(scope, teamId, holidayDates);
 
@@ -179,7 +199,10 @@ export const getAttendanceByUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { role, teamId: requestingUserTeamId } = req.user;
-    let { month } = req.query;
+    // Normalize query param (handle whitespace + array edge cases)
+    let month = req.query.month;
+    if (Array.isArray(month)) month = month[0];
+    month = typeof month === 'string' ? month.trim() : undefined;
 
     // Validate ObjectId format
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -246,8 +269,8 @@ export const getAttendanceByUser = async (req, res) => {
       }
     }
 
-    // TODO: Fetch holidays from database in future
-    const holidayDates = new Set();
+    // Fetch holidays from database for this month
+    const holidayDates = await getHolidayDatesForMonth(month);
 
     // Get monthly history using existing service
     const items = await attendanceService.getMonthlyHistory(id, month, holidayDates);

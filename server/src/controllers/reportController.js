@@ -2,6 +2,17 @@ import mongoose from 'mongoose';
 import * as reportService from '../services/reportService.js';
 import * as exportService from '../services/exportService.js';
 import { getTodayDateKey } from '../utils/dateUtils.js';
+import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
+
+/**
+ * Normalize query param: extract first element if array, trim if string.
+ * @param {any} v - query param value
+ * @returns {string|undefined}
+ */
+const pickString = (v) => {
+    if (Array.isArray(v)) v = v[0];
+    return typeof v === 'string' ? v.trim() : undefined;
+};
 
 /**
  * GET /api/reports/monthly?month=YYYY-MM&scope=team|company&teamId?
@@ -11,7 +22,10 @@ import { getTodayDateKey } from '../utils/dateUtils.js';
 export const getMonthlyReport = async (req, res) => {
     try {
         const user = req.user;
-        let { month, scope, teamId } = req.query;
+        // Normalize query params (handle whitespace + array edge cases)
+        let month = pickString(req.query.month);
+        let scope = pickString(req.query.scope);
+        let teamId = pickString(req.query.teamId);
 
         // Defense-in-depth: Only Manager/Admin can access reports
         if (!['MANAGER', 'ADMIN'].includes(user.role)) {
@@ -78,12 +92,14 @@ export const getMonthlyReport = async (req, res) => {
                         message: 'Invalid teamId format'
                     });
                 }
+            } else {
+                // Defense-in-depth: ensure teamId is not passed to service for company scope
+                teamId = undefined;
             }
-            // If scope is 'company', teamId is ignored
         }
 
-        // TODO: In future, fetch holiday dates from Holiday model
-        const holidayDates = new Set();
+        // Fetch holiday dates from database for this month
+        const holidayDates = await getHolidayDatesForMonth(month);
 
         const result = await reportService.getMonthlyReport(scope, month, teamId, holidayDates);
 
@@ -111,7 +127,10 @@ export const getMonthlyReport = async (req, res) => {
 export const exportMonthlyReport = async (req, res) => {
     try {
         const user = req.user;
-        let { month, scope, teamId } = req.query;
+        // Normalize query params (handle whitespace + array edge cases)
+        let month = pickString(req.query.month);
+        let scope = pickString(req.query.scope);
+        let teamId = pickString(req.query.teamId);
 
         // Defense-in-depth: Only Manager/Admin can access reports
         if (!['MANAGER', 'ADMIN'].includes(user.role)) {
@@ -175,11 +194,14 @@ export const exportMonthlyReport = async (req, res) => {
                         message: 'Invalid teamId format'
                     });
                 }
+            } else {
+                // Defense-in-depth: ensure teamId is not passed to service for company scope
+                teamId = undefined;
             }
         }
 
-        // TODO: In future, fetch holiday dates from Holiday model
-        const holidayDates = new Set();
+        // Fetch holiday dates from database for this month
+        const holidayDates = await getHolidayDatesForMonth(month);
 
         const buffer = await exportService.generateMonthlyExportExcel(scope, month, teamId, holidayDates);
 

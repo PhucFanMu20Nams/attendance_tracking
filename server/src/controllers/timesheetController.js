@@ -1,5 +1,6 @@
 import * as timesheetService from '../services/timesheetService.js';
 import { getTodayDateKey } from '../utils/dateUtils.js';
+import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 
 /**
  * GET /api/timesheet/team?month=YYYY-MM
@@ -8,7 +9,8 @@ import { getTodayDateKey } from '../utils/dateUtils.js';
  */
 export const getTeamTimesheet = async (req, res) => {
     try {
-        let month = req.query.month;
+        const rawMonth = req.query.month;
+        let month = typeof rawMonth === 'string' ? rawMonth.trim() : undefined;
         if (!month) {
             const today = getTodayDateKey();
             month = today.substring(0, 7);
@@ -41,8 +43,8 @@ export const getTeamTimesheet = async (req, res) => {
             });
         }
 
-        // TODO: Fetch holidays from database in future
-        const holidayDates = new Set();
+        // Fetch holidays from database for this month
+        const holidayDates = await getHolidayDatesForMonth(month);
 
         const result = await timesheetService.getTeamTimesheet(teamId, month, holidayDates);
 
@@ -62,7 +64,8 @@ export const getTeamTimesheet = async (req, res) => {
  */
 export const getCompanyTimesheet = async (req, res) => {
     try {
-        let month = req.query.month;
+        const rawMonth = req.query.month;
+        let month = typeof rawMonth === 'string' ? rawMonth.trim() : undefined;
         if (!month) {
             const today = getTodayDateKey();
             month = today.substring(0, 7);
@@ -74,8 +77,8 @@ export const getCompanyTimesheet = async (req, res) => {
             });
         }
 
-        // TODO: Fetch holidays from database in future
-        const holidayDates = new Set();
+        // Fetch holidays from database for this month
+        const holidayDates = await getHolidayDatesForMonth(month);
 
         const result = await timesheetService.getCompanyTimesheet(month, holidayDates);
 
