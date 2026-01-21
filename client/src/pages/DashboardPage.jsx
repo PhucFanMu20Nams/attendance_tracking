@@ -113,10 +113,10 @@ export default function DashboardPage() {
     return (
         <div className="max-w-xl mx-auto">
             {/* Page Title */}
-            <h1 className="text-2xl font-bold text-gray-800 mb-6">Dashboard</h1>
+            <h1 className="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
 
             {/* Today's Date Card */}
-            <Card className="mb-6">
+            <Card className="mb-6 shadow-sm">
                 <div className="text-center">
                     <p className="text-gray-500 text-sm">Hôm nay</p>
                     <p className="text-lg font-semibold text-gray-800">
@@ -159,15 +159,21 @@ export default function DashboardPage() {
 
                         {/* Check-in/out Times */}
                         <div className="grid grid-cols-2 gap-4 text-sm">
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-gray-500">Check-in</p>
-                                <p className="text-xl font-bold text-gray-800">
+                            <div className="bg-primary-50 rounded-lg p-4 border border-primary-100">
+                                <div className="flex items-center gap-2 text-primary-600 text-sm mb-1">
+                                    <HiClock className="h-4 w-4" />
+                                    <span>Check-in</span>
+                                </div>
+                                <p className="text-2xl font-bold text-gray-900">
                                     {formatTime(todayAttendance?.checkInAt)}
                                 </p>
                             </div>
-                            <div className="bg-gray-50 rounded-lg p-4">
-                                <p className="text-gray-500">Check-out</p>
-                                <p className="text-xl font-bold text-gray-800">
+                            <div className="bg-primary-50 rounded-lg p-4 border border-primary-100">
+                                <div className="flex items-center gap-2 text-primary-600 text-sm mb-1">
+                                    <HiCheckCircle className="h-4 w-4" />
+                                    <span>Check-out</span>
+                                </div>
+                                <p className="text-2xl font-bold text-gray-900">
                                     {formatTime(todayAttendance?.checkOutAt)}
                                 </p>
                             </div>
@@ -201,7 +207,7 @@ export default function DashboardPage() {
                         <div className="flex gap-4 justify-center">
                             {!hasCheckedIn && (
                                 <Button
-                                    color="cyan"
+                                    color="blue"
                                     size="lg"
                                     onClick={handleCheckIn}
                                     disabled={actionLoading || loading}
