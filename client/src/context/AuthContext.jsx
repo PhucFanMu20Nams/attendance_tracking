@@ -16,13 +16,20 @@ export function AuthProvider({ children }) {
     const navigate = useNavigate();
     const [user, setUser] = useState(null);
     const [token, setToken] = useState(() => localStorage.getItem('token'));
-    const [loading, setLoading] = useState(true);
+    // Initialize loading based on token: no token = no need to verify = not loading
+    const [loading, setLoading] = useState(() => !!localStorage.getItem('token'));
 
     // On mount: if token exists, fetch /auth/me to validate and get user
     // Uses AbortController to prevent memory leaks and race conditions
+    // Skip if user already set (e.g., after login() which sets both token and user)
     useEffect(() => {
-        if (!token) {
-            setLoading(false);
+        // No token = loading was initialized as false, nothing to do
+        if (!token) return;
+
+        // User already set (from login response) → skip redundant /auth/me call
+        // This prevents double-fetch: login already returns user data
+        if (user) {
+
             return;
         }
 
@@ -90,6 +97,7 @@ export function AuthProvider({ children }) {
  * useAuth hook: access auth context.
  * Must be used within AuthProvider.
  */
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
     const ctx = useContext(AuthContext);
     if (!ctx) {
