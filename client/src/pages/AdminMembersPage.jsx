@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Table, Button, Modal, Spinner, Alert, Select, Label, TextInput, Toast
 } from 'flowbite-react';
-import { HiRefresh, HiPencil, HiKey, HiEye, HiCheck, HiX } from 'react-icons/hi';
+import { HiRefresh, HiPencil, HiKey, HiEye, HiCheck, HiX, HiPlus } from 'react-icons/hi';
 import { useNavigate } from 'react-router-dom';
 import {
     getTeams, getTodayAttendance, updateUser, resetPassword
 } from '../api/memberApi';
+import { createUser } from '../api/adminApi';
 import { PageHeader, StatusBadge } from '../components/ui';
 
 /**
@@ -47,10 +48,36 @@ export default function AdminMembersPage() {
     const [resetLoading, setResetLoading] = useState(false);
     const [resetError, setResetError] = useState('');
 
+    // Create user modal states
+    const [createModal, setCreateModal] = useState(false);
+    const [createForm, setCreateForm] = useState({
+        employeeCode: '',
+        name: '',
+        email: '',
+        username: '',
+        password: '',
+        role: 'EMPLOYEE',
+        teamId: '',
+        startDate: '',
+        isActive: true
+    });
+    const [createLoading, setCreateLoading] = useState(false);
+    const [createError, setCreateError] = useState('');
+
     // Toast state
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
 
+    // Race condition protection
+    const requestIdRef = useRef(0);
+    const isMounted = useRef(false);
 
+    // Track mount state
+    useEffect(() => {
+        isMounted.current = true;
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
 
     // Fetch teams on mount
     useEffect(() => {
@@ -66,7 +93,9 @@ export default function AdminMembersPage() {
     }, []);
 
     // Fetch members when scope/teamId changes
-    const fetchMembers = useCallback(async (signal) => {
+    const fetchMembers = useCallback(async () => {
+        const currentRequestId = ++requestIdRef.current;
+
         // Guard: if scope=team but no teamId selected, don't fetch yet
         if (scope === 'team' && !teamId) {
             setMembers([]);
@@ -84,20 +113,26 @@ export default function AdminMembersPage() {
                 params.teamId = teamId;
             }
             const res = await getTodayAttendance(params);
+
+            // Ignore stale response
+            if (!isMounted.current || currentRequestId !== requestIdRef.current) return;
+
             setTodayDate(res.data.date || '');
             setMembers(res.data.items || []);
         } catch (err) {
-            if (err.name === 'CanceledError') return;
+            if (err.name === 'CanceledError' || err.name === 'AbortError' || err?.code === 'ERR_CANCELED') return;
+            // Ignore stale error
+            if (!isMounted.current || currentRequestId !== requestIdRef.current) return;
             setError(err.response?.data?.message || 'Failed to load members');
         } finally {
-            setLoading(false);
+            if (isMounted.current && currentRequestId === requestIdRef.current) {
+                setLoading(false);
+            }
         }
     }, [scope, teamId]);
 
     useEffect(() => {
-        const controller = new AbortController();
-        fetchMembers(controller.signal);
-        return () => controller.abort();
+        fetchMembers();
     }, [fetchMembers]);
 
     // Format time (ISO → HH:mm GMT+7)
@@ -193,6 +228,70 @@ export default function AdminMembersPage() {
         }
     };
 
+    // Validate create form
+    const validateCreateForm = () => {
+        if (!createForm.employeeCode.trim()) return 'Employee code is required';
+        if (!createForm.name.trim()) return 'Name is required';
+        if (!createForm.email.trim()) return 'Email is required';
+        if (!createForm.password) return 'Password is required';
+        if (createForm.password.length < 8) return 'Password must be at least 8 characters';
+        if (!createForm.role) return 'Role is required';
+        return null;
+    };
+
+    // Submit create user
+    const handleCreateSubmit = async () => {
+        const validationError = validateCreateForm();
+        if (validationError) {
+            setCreateError(validationError);
+            return;
+        }
+
+        setCreateLoading(true);
+        setCreateError('');
+        try {
+            const payload = {
+                employeeCode: createForm.employeeCode.trim(),
+                name: createForm.name.trim(),
+                email: createForm.email.trim(),
+                password: createForm.password,
+                role: createForm.role,
+            };
+
+            // Optional fields
+            if (createForm.username.trim()) payload.username = createForm.username.trim();
+            if (createForm.teamId) payload.teamId = createForm.teamId;
+            if (createForm.startDate) payload.startDate = createForm.startDate;
+            if (createForm.isActive !== undefined) payload.isActive = createForm.isActive;
+
+            await createUser(payload);
+            setCreateModal(false);
+            resetCreateForm();
+            showToast('Member created successfully', 'success');
+            fetchMembers();
+        } catch (err) {
+            setCreateError(err.response?.data?.message || 'Failed to create member');
+        } finally {
+            setCreateLoading(false);
+        }
+    };
+
+    // Reset create form
+    const resetCreateForm = () => {
+        setCreateForm({
+            employeeCode: '',
+            name: '',
+            email: '',
+            username: '',
+            password: '',
+            role: 'EMPLOYEE',
+            teamId: '',
+            startDate: '',
+            isActive: true
+        });
+        setCreateError('');
+    };
+
     // Toast helper
     const showToast = (message, type = 'success') => {
         setToast({ show: true, message, type });
@@ -207,6 +306,10 @@ export default function AdminMembersPage() {
     return (
         <div>
             <PageHeader title="Quản lý nhân viên">
+                <Button color="success" onClick={() => setCreateModal(true)}>
+                    <HiPlus className="mr-2 h-4 w-4" />
+                    Thêm nhân viên
+                </Button>
                 <Button color="light" onClick={() => fetchMembers()}>
                     <HiRefresh className="mr-2 h-4 w-4" />
                     Làm mới
@@ -445,6 +548,131 @@ export default function AdminMembersPage() {
                     </Button>
                     <Button color="gray" onClick={() => setResetModal({ open: false, user: null })}>
                         Cancel
+                    </Button>
+                </Modal.Footer>
+            </Modal>
+
+            {/* Create User Modal */}
+            <Modal show={createModal} onClose={() => { setCreateModal(false); resetCreateForm(); }}>
+                <Modal.Header>Thêm nhân viên mới</Modal.Header>
+                <Modal.Body>
+                    {createError && (
+                        <Alert color="failure" className="mb-4">{createError}</Alert>
+                    )}
+                    <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <Label htmlFor="create-employeeCode" value="Mã NV *" />
+                                <TextInput
+                                    id="create-employeeCode"
+                                    value={createForm.employeeCode}
+                                    onChange={(e) => setCreateForm({ ...createForm, employeeCode: e.target.value })}
+                                    placeholder="EMP001"
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="create-role" value="Role *" />
+                                <Select
+                                    id="create-role"
+                                    value={createForm.role}
+                                    onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                                >
+                                    <option value="EMPLOYEE">EMPLOYEE</option>
+                                    <option value="MANAGER">MANAGER</option>
+                                    <option value="ADMIN">ADMIN</option>
+                                </Select>
+                            </div>
+                        </div>
+
+                        <div>
+                            <Label htmlFor="create-name" value="Họ tên *" />
+                            <TextInput
+                                id="create-name"
+                                value={createForm.name}
+                                onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
+                                placeholder="Nguyễn Văn A"
+                            />
+                        </div>
+
+                        <div>
+                            <Label htmlFor="create-email" value="Email *" />
+                            <TextInput
+                                id="create-email"
+                                type="email"
+                                value={createForm.email}
+                                onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
+                                placeholder="user@company.com"
+                            />
+                        </div>
+
+                        <div>
+                            <Label htmlFor="create-username" value="Username" />
+                            <TextInput
+                                id="create-username"
+                                value={createForm.username}
+                                onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
+                                placeholder="Optional"
+                            />
+                        </div>
+
+                        <div>
+                            <Label htmlFor="create-password" value="Mật khẩu *" />
+                            <TextInput
+                                id="create-password"
+                                type="password"
+                                value={createForm.password}
+                                onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                                placeholder="Min 8 characters"
+                            />
+                        </div>
+
+                        <div>
+                            <Label htmlFor="create-teamId" value="Team" />
+                            <Select
+                                id="create-teamId"
+                                value={createForm.teamId}
+                                onChange={(e) => setCreateForm({ ...createForm, teamId: e.target.value })}
+                            >
+                                <option value="">Select team...</option>
+                                {teams.map((team) => (
+                                    <option key={team._id} value={team._id}>
+                                        {team.name}
+                                    </option>
+                                ))}
+                            </Select>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <Label htmlFor="create-startDate" value="Ngày bắt đầu" />
+                                <TextInput
+                                    id="create-startDate"
+                                    type="date"
+                                    value={createForm.startDate}
+                                    onChange={(e) => setCreateForm({ ...createForm, startDate: e.target.value })}
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="create-isActive" value="Trạng thái" />
+                                <Select
+                                    id="create-isActive"
+                                    value={createForm.isActive.toString()}
+                                    onChange={(e) => setCreateForm({ ...createForm, isActive: e.target.value === 'true' })}
+                                >
+                                    <option value="true">Active</option>
+                                    <option value="false">Inactive</option>
+                                </Select>
+                            </div>
+                        </div>
+                    </div>
+                </Modal.Body>
+                <Modal.Footer>
+                    <Button onClick={handleCreateSubmit} disabled={createLoading}>
+                        {createLoading ? <Spinner size="sm" className="mr-2" /> : <HiCheck className="mr-2" />}
+                        Tạo nhân viên
+                    </Button>
+                    <Button color="gray" onClick={() => { setCreateModal(false); resetCreateForm(); }}>
+                        Hủy
                     </Button>
                 </Modal.Footer>
             </Modal>
