@@ -11,8 +11,10 @@ import TimesheetMatrixPage from './pages/TimesheetMatrixPage';
 import MonthlyReportPage from './pages/MonthlyReportPage';
 import AdminMembersPage from './pages/AdminMembersPage';
 import AdminMemberDetailPage from './pages/AdminMemberDetailPage';
+import AdminHolidaysPage from './pages/AdminHolidaysPage';
 import TeamMembersPage from './pages/TeamMembersPage';
 import TeamMemberDetailPage from './pages/TeamMemberDetailPage';
+import ProfilePage from './pages/ProfilePage';
 
 /**
  * App: Main routing component for Attendance App.
@@ -64,6 +66,10 @@ export default function App() {
                 <Route
                     path="/requests"
                     element={<RequestsPage />}
+                />
+                <Route
+                    path="/profile"
+                    element={<ProfilePage />}
                 />
 
                 {/* MANAGER and ADMIN only */}
@@ -124,6 +130,14 @@ export default function App() {
                     element={
                         <RoleRoute allowedRoles={['ADMIN']}>
                             <AdminMemberDetailPage />
+                        </RoleRoute>
+                    }
+                />
+                <Route
+                    path="/admin/holidays"
+                    element={
+                        <RoleRoute allowedRoles={['ADMIN']}>
+                            <AdminHolidaysPage />
                         </RoleRoute>
                     }
                 />

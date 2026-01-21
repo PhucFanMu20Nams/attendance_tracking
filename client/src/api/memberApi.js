@@ -21,9 +21,10 @@ import client from './client';
 /**
  * Get all teams.
  * Roles: EMPLOYEE | MANAGER | ADMIN
+ * @param {Object} [config] - Optional axios config (e.g., { signal } for AbortController)
  * @returns {Promise} { items: [{ _id, name }] }
  */
-export const getTeams = () => client.get('/teams');
+export const getTeams = (config) => client.get('/teams', config);
 
 
 // ============================================

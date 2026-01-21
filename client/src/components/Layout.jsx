@@ -1,7 +1,7 @@
 import { Navbar, Sidebar, Dropdown, Avatar } from 'flowbite-react';
 import { Outlet, NavLink, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { HiHome, HiClock, HiDocumentText, HiCheckCircle, HiTable, HiChartBar, HiUsers, HiClipboardCheck } from 'react-icons/hi';
+import { HiHome, HiClock, HiDocumentText, HiCheckCircle, HiTable, HiChartBar, HiUsers, HiClipboardCheck, HiUser, HiCalendar } from 'react-icons/hi';
 
 /**
  * Layout component: Main app layout with Navbar and Sidebar.
@@ -31,6 +31,8 @@ export default function Layout() {
         { to: '/reports', label: 'Reports', icon: HiChartBar, roles: ['MANAGER', 'ADMIN'] },
         { to: '/team/members', label: 'Team Members', icon: HiUsers, roles: ['MANAGER'] },
         { to: '/admin/members', label: 'Members', icon: HiUsers, roles: ['ADMIN'] },
+        { to: '/admin/holidays', label: 'Holidays', icon: HiCalendar, roles: ['ADMIN'] },
+        { to: '/profile', label: 'Profile', icon: HiUser, roles: ['EMPLOYEE', 'MANAGER', 'ADMIN'] },
     ];
 
     // Filter navigation items based on user role
