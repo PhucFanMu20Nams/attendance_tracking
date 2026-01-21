@@ -1,3 +1,43 @@
+/* Google Fonts - Inter for modern SaaS typography */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Base typography defaults */
+body {
+    @apply font-sans text-gray-900 antialiased;
+}
+
+/* Custom focus ring for accessibility (keyboard navigation) */
+*:focus-visible {
+    @apply outline-none ring-2 ring-primary-500 ring-offset-2;
+}
+
+/* Reusable status badge variants per RULES.md */
+@layer components {
+    .badge-ontime {
+        @apply bg-green-100 text-green-800;
+    }
+
+    .badge-late {
+        @apply bg-amber-100 text-amber-800;
+    }
+
+    .badge-absent {
+        @apply bg-red-100 text-red-800;
+    }
+
+    .badge-working {
+        @apply bg-blue-100 text-blue-800;
+    }
+
+    .badge-missing {
+        @apply bg-yellow-100 text-yellow-800;
+    }
+
+    .badge-weekend {
+        @apply bg-gray-100 text-gray-600;
+    }
+}
