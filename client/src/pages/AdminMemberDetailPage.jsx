@@ -1,12 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import {
-    Card, Table, Button, Modal, Spinner, Alert, Badge, Select, Label, TextInput, Toast
-} from 'flowbite-react';
-import { HiArrowLeft, HiPencil, HiKey, HiCheck, HiX } from 'react-icons/hi';
-import {
-    getTeams, getUserById, getUserAttendance, updateUser, resetPassword
-} from '../api/memberApi';
+import { Card, Table, Button, Spinner, Alert, Badge, Select, Label } from 'flowbite-react';
+import { HiArrowLeft, HiPencil, HiKey } from 'react-icons/hi';
+
+// API
+import { getTeams, getUserById, getUserAttendance, updateUser, resetPassword } from '../api/memberApi';
+
+// Components
+import ToastNotification from '../components/ui/ToastNotification';
+import EditMemberModal from '../components/modals/EditMemberModal';
+import ResetPasswordModal from '../components/modals/ResetPasswordModal';
+
+// Hooks & Utils
+import { useToast } from '../hooks/useToast';
+import { getCurrentMonth, formatDate, formatTime, formatMinutes, getMonthOptions } from '../utils/dateTimeFormat';
+import { STATUS_COLORS, STATUS_LABELS } from '../utils/statusConfig';
 
 /**
  * AdminMemberDetailPage: Admin views member profile + monthly attendance history.
@@ -22,19 +30,14 @@ import {
 export default function AdminMemberDetailPage() {
     const { id } = useParams();
     const navigate = useNavigate();
-    const isMounted = useRef(true);
-
-    // Get current month in YYYY-MM format (GMT+7)
-    const getCurrentMonth = () => {
-        const now = new Date();
-        const gmt7 = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }));
-        return `${gmt7.getFullYear()}-${String(gmt7.getMonth() + 1).padStart(2, '0')}`;
-    };
+    const { toast, showToast, hideToast } = useToast();
+    const isMounted = useRef(false);
 
     // Data states
     const [user, setUser] = useState(null);
     const [attendance, setAttendance] = useState([]);
     const [teams, setTeams] = useState([]);
+    const [teamsLoading, setTeamsLoading] = useState(true);
     const [month, setMonth] = useState(getCurrentMonth());
     const [loading, setLoading] = useState(true);
     const [attendanceLoading, setAttendanceLoading] = useState(false);
@@ -44,49 +47,15 @@ export default function AdminMemberDetailPage() {
     // Race condition protection: track latest request
     const attendanceRequestIdRef = useRef(0);
 
-    // Edit modal states
-    const [editModal, setEditModal] = useState(false);
-    const [editForm, setEditForm] = useState({});
-    const [editLoading, setEditLoading] = useState(false);
-    const [editError, setEditError] = useState('');
-
-    // Reset password modal states
+    // Modal states (simplified with new components)
+    const [editUser, setEditUser] = useState(null);
     const [resetModal, setResetModal] = useState(false);
-    const [newPassword, setNewPassword] = useState('');
-    const [resetLoading, setResetLoading] = useState(false);
-    const [resetError, setResetError] = useState('');
-
-    // Toast state
-    const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-    const toastTimeoutRef = useRef(null);
-
-    // Status badge colors per RULES.md line 102-109
-    const statusColors = {
-        'ON_TIME': 'success',      // green
-        'LATE': 'warning',         // orange/red → Flowbite warning is orange
-        'WORKING': 'info',         // blue
-        'MISSING_CHECKOUT': 'warning', // yellow per RULES.md
-        'WEEKEND_OR_HOLIDAY': 'gray',  // grey per RULES.md
-        'ABSENT': 'failure',           // red
-        null: 'gray'                   // neutral
-    };
-
-    const statusLabels = {
-        'ON_TIME': 'On Time',
-        'LATE': 'Late',
-        'WORKING': 'Working',
-        'MISSING_CHECKOUT': 'Missing Checkout',
-        'WEEKEND_OR_HOLIDAY': 'Weekend/Holiday',
-        'ABSENT': 'Absent',
-        null: '-'
-    };
 
     // Cleanup on unmount
     useEffect(() => {
         isMounted.current = true;
         return () => {
             isMounted.current = false;
-            if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
         };
     }, []);
 
@@ -98,6 +67,8 @@ export default function AdminMemberDetailPage() {
                 if (isMounted.current) setTeams(res.data.items || []);
             } catch (err) {
                 console.error('Failed to fetch teams:', err);
+            } finally {
+                if (isMounted.current) setTeamsLoading(false);
             }
         };
         fetchTeamsList();
@@ -161,143 +132,26 @@ export default function AdminMemberDetailPage() {
         fetchAttendance();
     }, [fetchAttendance]);
 
-    // Format date (YYYY-MM-DD → dd/mm/yyyy)
-    const formatDate = (dateStr) => {
-        if (!dateStr) return '-';
-        const [year, month, day] = dateStr.split('-');
-        return `${day}/${month}/${year}`;
+    // Edit member handler (simplified - uses EditMemberModal component)
+    // Modal calls: onSubmit(data, userId) - errors propagate to modal's catch block
+    const handleEditSubmit = async (data, userId) => {
+        const res = await updateUser(userId, data);
+        setUser(res.data.user); // Update local user state immediately
+        showToast('Member updated successfully', 'success');
     };
 
-    // Format time (ISO → HH:mm GMT+7)
-    const formatTime = (isoString) => {
-        if (!isoString) return '-';
-        return new Date(isoString).toLocaleTimeString('vi-VN', {
-            timeZone: 'Asia/Ho_Chi_Minh',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+    // Reset password handler (simplified - uses ResetPasswordModal component)
+    // Modal calls: onSubmit(password) - errors propagate to modal's catch block
+    const handleResetSubmit = async (newPassword) => {
+        if (!user?._id) return; // Defensive guard
+        await resetPassword(user._id, newPassword);
+        showToast('Password updated', 'success');
     };
 
-    // Format minutes to hours
-    const formatMinutes = (minutes) => {
-        if (minutes === null || minutes === undefined) return '-';
-        const hours = Math.floor(minutes / 60);
-        const mins = minutes % 60;
-        return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-    };
-
-    // Generate month options (last 12 months)
-    const getMonthOptions = () => {
-        const options = [];
-        const now = new Date();
-        for (let i = 0; i < 12; i++) {
-            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            const label = d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-            options.push({ value, label });
-        }
-        return options;
-    };
-
-    // Open edit modal
-    const handleEditClick = () => {
-        if (!user) return;
-        setEditForm({
-            name: user.name || '',
-            email: user.email || '',
-            username: user.username || '',
-            teamId: user.teamId || '',
-            isActive: user.isActive ?? true,
-            startDate: user.startDate ? user.startDate.split('T')[0] : ''
-        });
-        setEditError('');
-        setEditModal(true);
-    };
-
-    // Submit edit
-    const handleEditSubmit = async () => {
-        if (!user) return;
-        setEditLoading(true);
-        setEditError('');
-        try {
-            const data = {};
-            if (editForm.name !== user.name) data.name = editForm.name;
-            if (editForm.email !== user.email) data.email = editForm.email;
-            if (editForm.username !== (user.username || '') && editForm.username) {
-                data.username = editForm.username;
-            }
-            const originalTeamId = user.teamId || '';
-            if (editForm.teamId !== originalTeamId && editForm.teamId) {
-                data.teamId = editForm.teamId;
-            }
-            if (editForm.isActive !== user.isActive) data.isActive = editForm.isActive;
-            if (editForm.startDate) {
-                const originalDate = user.startDate ? user.startDate.split('T')[0] : '';
-                if (editForm.startDate !== originalDate) data.startDate = editForm.startDate;
-            }
-
-            if (Object.keys(data).length === 0) {
-                setEditModal(false);
-                return;
-            }
-
-            const res = await updateUser(user._id, data);
-            if (isMounted.current) {
-                setUser(res.data.user);
-                setEditModal(false);
-                showToast('Member updated successfully', 'success');
-            }
-        } catch (err) {
-            if (isMounted.current) {
-                setEditError(err.response?.data?.message || 'Failed to update member');
-            }
-        } finally {
-            if (isMounted.current) setEditLoading(false);
-        }
-    };
-
-    // Open reset password modal
-    const handleResetClick = () => {
-        setNewPassword('');
-        setResetError('');
-        setResetModal(true);
-    };
-
-    // Submit reset password
-    const handleResetSubmit = async () => {
-        if (!user || !newPassword) return;
-        if (newPassword.length < 8) {
-            setResetError('Password must be at least 8 characters');
-            return;
-        }
-        setResetLoading(true);
-        setResetError('');
-        try {
-            await resetPassword(user._id, newPassword);
-            if (isMounted.current) {
-                setResetModal(false);
-                showToast('Password updated', 'success');
-            }
-        } catch (err) {
-            if (isMounted.current) {
-                setResetError(err.response?.data?.message || 'Failed to reset password');
-            }
-        } finally {
-            if (isMounted.current) setResetLoading(false);
-        }
-    };
-
-    // Toast helper with cleanup
-    const showToast = (message, type = 'success') => {
-        if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-        setToast({ show: true, message, type });
-        toastTimeoutRef.current = setTimeout(() => {
-            if (isMounted.current) setToast({ show: false, message: '', type: 'success' });
-        }, 3000);
-    };
-
-    // Get team name by ID
+    // Get team name by ID (handles loading state to prevent flickering)
     const getTeamName = (teamId) => {
+        if (!teamId) return 'No Team';
+        if (teamsLoading) return '...';  // Teams still loading
         const team = teams.find(t => t._id === teamId);
         return team?.name || 'No Team';
     };
@@ -339,11 +193,11 @@ export default function AdminMemberDetailPage() {
                     </h1>
                 </div>
                 <div className="flex gap-2">
-                    <Button color="light" onClick={handleEditClick}>
+                    <Button color="light" onClick={() => setEditUser(user)}>
                         <HiPencil className="mr-2 h-4 w-4" />
                         Edit
                     </Button>
-                    <Button color="light" onClick={handleResetClick}>
+                    <Button color="light" onClick={() => setResetModal(true)}>
                         <HiKey className="mr-2 h-4 w-4" />
                         Reset Password
                     </Button>
@@ -368,7 +222,7 @@ export default function AdminMemberDetailPage() {
                     </div>
                     <div>
                         <p className="text-sm text-gray-500">Team</p>
-                        <p className="font-medium">{user?.teamId ? getTeamName(user.teamId) : 'No Team'}</p>
+                        <p className="font-medium">{getTeamName(user?.teamId)}</p>
                     </div>
                     <div>
                         <p className="text-sm text-gray-500">Start Date</p>
@@ -434,8 +288,8 @@ export default function AdminMemberDetailPage() {
                                         <Table.Cell>{formatTime(item.checkInAt)}</Table.Cell>
                                         <Table.Cell>{formatTime(item.checkOutAt)}</Table.Cell>
                                         <Table.Cell>
-                                            <Badge color={statusColors[item.status] || 'gray'}>
-                                                {statusLabels[item.status] || 'Unknown'}
+                                            <Badge color={STATUS_COLORS[item.status] || 'gray'}>
+                                                {STATUS_LABELS[item.status] || 'Unknown'}
                                             </Badge>
                                         </Table.Cell>
                                         <Table.Cell>{formatMinutes(item.workMinutes)}</Table.Cell>
@@ -449,127 +303,24 @@ export default function AdminMemberDetailPage() {
             </Card>
 
             {/* Edit Modal */}
-            <Modal show={editModal} onClose={() => setEditModal(false)}>
-                <Modal.Header>Edit Member: {user?.name}</Modal.Header>
-                <Modal.Body>
-                    {editError && (
-                        <Alert color="failure" className="mb-4">{editError}</Alert>
-                    )}
-                    <div className="space-y-4">
-                        <div>
-                            <Label htmlFor="edit-name" value="Name" />
-                            <TextInput
-                                id="edit-name"
-                                value={editForm.name || ''}
-                                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-email" value="Email" />
-                            <TextInput
-                                id="edit-email"
-                                type="email"
-                                value={editForm.email || ''}
-                                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-username" value="Username" />
-                            <TextInput
-                                id="edit-username"
-                                value={editForm.username || ''}
-                                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-team" value="Team" />
-                            <Select
-                                id="edit-team"
-                                value={editForm.teamId || ''}
-                                onChange={(e) => setEditForm({ ...editForm, teamId: e.target.value })}
-                            >
-                                <option value="">No Team</option>
-                                {teams.map((team) => (
-                                    <option key={team._id} value={team._id}>{team.name}</option>
-                                ))}
-                            </Select>
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-startDate" value="Start Date" />
-                            <TextInput
-                                id="edit-startDate"
-                                type="date"
-                                value={editForm.startDate || ''}
-                                onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
-                            />
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <input
-                                id="edit-isActive"
-                                type="checkbox"
-                                checked={editForm.isActive ?? true}
-                                onChange={(e) => setEditForm({ ...editForm, isActive: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 rounded border-gray-300"
-                            />
-                            <Label htmlFor="edit-isActive" value="Active" />
-                        </div>
-                    </div>
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button onClick={handleEditSubmit} disabled={editLoading}>
-                        {editLoading ? <Spinner size="sm" className="mr-2" /> : <HiCheck className="mr-2" />}
-                        Save
-                    </Button>
-                    <Button color="gray" onClick={() => setEditModal(false)}>
-                        Cancel
-                    </Button>
-                </Modal.Footer>
-            </Modal>
+            <EditMemberModal
+                show={!!editUser}
+                user={editUser}
+                teams={teams}
+                onClose={() => setEditUser(null)}
+                onSubmit={handleEditSubmit}
+            />
 
             {/* Reset Password Modal */}
-            <Modal show={resetModal} onClose={() => setResetModal(false)}>
-                <Modal.Header>Reset Password: {user?.name}</Modal.Header>
-                <Modal.Body>
-                    {resetError && (
-                        <Alert color="failure" className="mb-4">{resetError}</Alert>
-                    )}
-                    <div>
-                        <Label htmlFor="new-password" value="New Password (min 8 characters)" />
-                        <TextInput
-                            id="new-password"
-                            type="password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="Enter new password"
-                        />
-                    </div>
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button onClick={handleResetSubmit} disabled={resetLoading || newPassword.length < 8}>
-                        {resetLoading ? <Spinner size="sm" className="mr-2" /> : <HiKey className="mr-2" />}
-                        Reset Password
-                    </Button>
-                    <Button color="gray" onClick={() => setResetModal(false)}>
-                        Cancel
-                    </Button>
-                </Modal.Footer>
-            </Modal>
+            <ResetPasswordModal
+                show={resetModal}
+                userName={user?.name}
+                onClose={() => setResetModal(false)}
+                onSubmit={handleResetSubmit}
+            />
 
             {/* Toast */}
-            {toast.show && (
-                <div className="fixed bottom-4 right-4 z-50">
-                    <Toast>
-                        <div className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${toast.type === 'success'
-                            ? 'bg-green-100 text-green-500'
-                            : 'bg-red-100 text-red-500'
-                            }`}>
-                            {toast.type === 'success' ? <HiCheck className="h-5 w-5" /> : <HiX className="h-5 w-5" />}
-                        </div>
-                        <div className="ml-3 text-sm font-normal">{toast.message}</div>
-                        <Toast.Toggle onClick={() => setToast({ ...toast, show: false })} />
-                    </Toast>
-                </div>
-            )}
+            <ToastNotification {...toast} onClose={hideToast} />
         </div>
     );
 }

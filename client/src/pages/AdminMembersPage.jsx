@@ -1,14 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-    Table, Button, Modal, Spinner, Alert, Select, Label, TextInput, Toast
+    Table, Button, Modal, Spinner, Alert, Select, Label, TextInput
 } from 'flowbite-react';
-import { HiRefresh, HiPencil, HiKey, HiEye, HiCheck, HiX, HiPlus } from 'react-icons/hi';
+import { HiRefresh, HiPencil, HiKey, HiEye, HiCheck, HiPlus } from 'react-icons/hi';
 import { useNavigate } from 'react-router-dom';
 import {
     getTeams, getTodayAttendance, updateUser, resetPassword
 } from '../api/memberApi';
 import { createUser } from '../api/adminApi';
 import { PageHeader, StatusBadge } from '../components/ui';
+import ToastNotification from '../components/ui/ToastNotification';
+import EditMemberModal from '../components/modals/EditMemberModal';
+import ResetPasswordModal from '../components/modals/ResetPasswordModal';
+import { useToast } from '../hooks/useToast';
+import { formatTime } from '../utils/dateTimeFormat';
+import { isValidEmail, MAX_LENGTHS } from '../utils/validation';
 
 /**
  * AdminMembersPage: Admin views all members with today's activity.
@@ -24,10 +30,12 @@ import { PageHeader, StatusBadge } from '../components/ui';
  */
 export default function AdminMembersPage() {
     const navigate = useNavigate();
+    const { toast, showToast, hideToast } = useToast();
 
     // Filter states
     const [scope, setScope] = useState('company');
     const [teamId, setTeamId] = useState('');
+    const [debouncedTeamId, setDebouncedTeamId] = useState(''); // Debounced to prevent spam requests
     const [teams, setTeams] = useState([]);
 
     // Data states
@@ -36,17 +44,9 @@ export default function AdminMembersPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
 
-    // Edit modal states
-    const [editModal, setEditModal] = useState({ open: false, user: null });
-    const [editForm, setEditForm] = useState({});
-    const [editLoading, setEditLoading] = useState(false);
-    const [editError, setEditError] = useState('');
-
-    // Reset password modal states
-    const [resetModal, setResetModal] = useState({ open: false, user: null });
-    const [newPassword, setNewPassword] = useState('');
-    const [resetLoading, setResetLoading] = useState(false);
-    const [resetError, setResetError] = useState('');
+    // Modal states (simplified with new components)
+    const [editUser, setEditUser] = useState(null);
+    const [resetUser, setResetUser] = useState(null);
 
     // Create user modal states
     const [createModal, setCreateModal] = useState(false);
@@ -64,9 +64,6 @@ export default function AdminMembersPage() {
     const [createLoading, setCreateLoading] = useState(false);
     const [createError, setCreateError] = useState('');
 
-    // Toast state
-    const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-
     // Race condition protection
     const requestIdRef = useRef(0);
     const isMounted = useRef(false);
@@ -78,6 +75,14 @@ export default function AdminMembersPage() {
             isMounted.current = false;
         };
     }, []);
+
+    // Debounce teamId changes to prevent spam requests (Phase 5.1B)
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedTeamId(teamId);
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [teamId]);
 
     // Fetch teams on mount
     useEffect(() => {
@@ -92,12 +97,12 @@ export default function AdminMembersPage() {
         fetchTeamsList();
     }, []);
 
-    // Fetch members when scope/teamId changes
+    // Fetch members when scope/debouncedTeamId changes
     const fetchMembers = useCallback(async () => {
         const currentRequestId = ++requestIdRef.current;
 
         // Guard: if scope=team but no teamId selected, don't fetch yet
-        if (scope === 'team' && !teamId) {
+        if (scope === 'team' && !debouncedTeamId) {
             setMembers([]);
             setTodayDate(''); // Reset to avoid stale date display
             setError('');
@@ -109,8 +114,8 @@ export default function AdminMembersPage() {
         setError('');
         try {
             const params = { scope };
-            if (scope === 'team' && teamId) {
-                params.teamId = teamId;
+            if (scope === 'team' && debouncedTeamId) {
+                params.teamId = debouncedTeamId;
             }
             const res = await getTodayAttendance(params);
 
@@ -129,103 +134,28 @@ export default function AdminMembersPage() {
                 setLoading(false);
             }
         }
-    }, [scope, teamId]);
+    }, [scope, debouncedTeamId]);
 
     useEffect(() => {
         fetchMembers();
     }, [fetchMembers]);
 
-    // Format time (ISO → HH:mm GMT+7)
-    const formatTime = (isoString) => {
-        if (!isoString) return '-';
-        return new Date(isoString).toLocaleTimeString('vi-VN', {
-            timeZone: 'Asia/Ho_Chi_Minh',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+    // Edit member handler (simplified - uses EditMemberModal component)
+    // Modal calls: onSubmit(data, userId) - errors propagate to modal's catch block
+    const handleEditSubmit = async (data, userId) => {
+        await updateUser(userId, data);
+        // Modal already calls onClose() on success, no need setEditUser(null)
+        showToast('Member updated successfully', 'success');
+        fetchMembers();
     };
 
-    // Open edit modal
-    const handleEditClick = (user) => {
-        setEditForm({
-            name: user.name || '',
-            email: user.email || '',
-            username: user.username || '',
-            teamId: user.teamId || '',
-            isActive: user.isActive ?? true,
-            startDate: user.startDate ? user.startDate.split('T')[0] : ''
-        });
-        setEditError('');
-        setEditModal({ open: true, user });
-    };
-
-    // Submit edit
-    const handleEditSubmit = async () => {
-        if (!editModal.user) return;
-        setEditLoading(true);
-        setEditError('');
-        try {
-            // Only send changed fields (whitelist)
-            const data = {};
-            if (editForm.name !== editModal.user.name) data.name = editForm.name;
-            if (editForm.email !== editModal.user.email) data.email = editForm.email;
-            // Only send username if changed and not empty (avoid sending '' which may conflict)
-            if (editForm.username !== (editModal.user.username || '') && editForm.username) {
-                data.username = editForm.username;
-            }
-            // FIX: Skip teamId if empty string (backend rejects '' as invalid ObjectId)
-            // Only send if user actually changed to a valid team
-            const originalTeamId = editModal.user.teamId || '';
-            if (editForm.teamId !== originalTeamId && editForm.teamId) {
-                data.teamId = editForm.teamId;
-            }
-            if (editForm.isActive !== editModal.user.isActive) data.isActive = editForm.isActive;
-            if (editForm.startDate) {
-                const originalDate = editModal.user.startDate ? editModal.user.startDate.split('T')[0] : '';
-                if (editForm.startDate !== originalDate) data.startDate = editForm.startDate;
-            }
-
-            if (Object.keys(data).length === 0) {
-                setEditModal({ open: false, user: null });
-                return;
-            }
-
-            await updateUser(editModal.user._id, data);
-            setEditModal({ open: false, user: null });
-            showToast('Member updated successfully', 'success');
-            fetchMembers();
-        } catch (err) {
-            setEditError(err.response?.data?.message || 'Failed to update member');
-        } finally {
-            setEditLoading(false);
-        }
-    };
-
-    // Open reset password modal
-    const handleResetClick = (user) => {
-        setNewPassword('');
-        setResetError('');
-        setResetModal({ open: true, user });
-    };
-
-    // Submit reset password
-    const handleResetSubmit = async () => {
-        if (!resetModal.user || !newPassword) return;
-        if (newPassword.length < 8) {
-            setResetError('Password must be at least 8 characters');
-            return;
-        }
-        setResetLoading(true);
-        setResetError('');
-        try {
-            await resetPassword(resetModal.user._id, newPassword);
-            setResetModal({ open: false, user: null });
-            showToast('Password updated', 'success');
-        } catch (err) {
-            setResetError(err.response?.data?.message || 'Failed to reset password');
-        } finally {
-            setResetLoading(false);
-        }
+    // Reset password handler (simplified - uses ResetPasswordModal component)
+    // Modal calls: onSubmit(password) - errors propagate to modal's catch block
+    const handleResetSubmit = async (newPassword) => {
+        if (!resetUser?._id) return; // Defensive guard
+        await resetPassword(resetUser._id, newPassword);
+        // Modal already calls onClose() on success, no need setResetUser(null)
+        showToast('Password updated', 'success');
     };
 
     // Validate create form
@@ -233,6 +163,7 @@ export default function AdminMembersPage() {
         if (!createForm.employeeCode.trim()) return 'Employee code is required';
         if (!createForm.name.trim()) return 'Name is required';
         if (!createForm.email.trim()) return 'Email is required';
+        if (!isValidEmail(createForm.email)) return 'Invalid email format';
         if (!createForm.password) return 'Password is required';
         if (createForm.password.length < 8) return 'Password must be at least 8 characters';
         if (!createForm.role) return 'Role is required';
@@ -292,12 +223,6 @@ export default function AdminMembersPage() {
         setCreateError('');
     };
 
-    // Toast helper
-    const showToast = (message, type = 'success') => {
-        setToast({ show: true, message, type });
-        setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
-    };
-
     // View detail navigation
     const handleViewDetail = (userId) => {
         navigate(`/admin/members/${userId}`);
@@ -310,7 +235,7 @@ export default function AdminMembersPage() {
                     <HiPlus className="mr-2 h-4 w-4" />
                     Thêm nhân viên
                 </Button>
-                <Button color="light" onClick={() => fetchMembers()}>
+                <Button color="light" onClick={fetchMembers} disabled={loading}>
                     <HiRefresh className="mr-2 h-4 w-4" />
                     Làm mới
                 </Button>
@@ -325,7 +250,10 @@ export default function AdminMembersPage() {
                         value={scope}
                         onChange={(e) => {
                             setScope(e.target.value);
-                            if (e.target.value === 'company') setTeamId('');
+                            if (e.target.value === 'company') {
+                                setTeamId('');
+                                setDebouncedTeamId(''); // Reset immediately for state cleanliness
+                            }
                         }}
                     >
                         <option value="company">All Company</option>
@@ -375,7 +303,7 @@ export default function AdminMembersPage() {
             {/* Empty state */}
             {!loading && !error && members.length === 0 && (
                 <Alert color="info">
-                    {scope === 'team' && !teamId
+                    {scope === 'team' && !debouncedTeamId
                         ? 'Please select a team to view members.'
                         : 'No members found.'}
                 </Alert>
@@ -425,14 +353,14 @@ export default function AdminMembersPage() {
                                             <Button
                                                 size="xs"
                                                 color="light"
-                                                onClick={() => handleEditClick(item.user)}
+                                                onClick={() => setEditUser(item.user)}
                                             >
                                                 <HiPencil className="h-4 w-4" />
                                             </Button>
                                             <Button
                                                 size="xs"
                                                 color="light"
-                                                onClick={() => handleResetClick(item.user)}
+                                                onClick={() => setResetUser(item.user)}
                                             >
                                                 <HiKey className="h-4 w-4" />
                                             </Button>
@@ -446,114 +374,24 @@ export default function AdminMembersPage() {
             )}
 
             {/* Edit Modal */}
-            <Modal show={editModal.open} onClose={() => setEditModal({ open: false, user: null })}>
-                <Modal.Header>Edit Member: {editModal.user?.name}</Modal.Header>
-                <Modal.Body>
-                    {editError && (
-                        <Alert color="failure" className="mb-4">{editError}</Alert>
-                    )}
-                    <div className="space-y-4">
-                        <div>
-                            <Label htmlFor="edit-name" value="Name" />
-                            <TextInput
-                                id="edit-name"
-                                value={editForm.name || ''}
-                                onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-email" value="Email" />
-                            <TextInput
-                                id="edit-email"
-                                type="email"
-                                value={editForm.email || ''}
-                                onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-username" value="Username" />
-                            <TextInput
-                                id="edit-username"
-                                value={editForm.username || ''}
-                                onChange={(e) => setEditForm({ ...editForm, username: e.target.value })}
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-team" value="Team" />
-                            <Select
-                                id="edit-team"
-                                value={editForm.teamId || ''}
-                                onChange={(e) => setEditForm({ ...editForm, teamId: e.target.value })}
-                            >
-                                <option value="">No Team</option>
-                                {teams.map((team) => (
-                                    <option key={team._id} value={team._id}>{team.name}</option>
-                                ))}
-                            </Select>
-                        </div>
-                        <div>
-                            <Label htmlFor="edit-startDate" value="Start Date" />
-                            <TextInput
-                                id="edit-startDate"
-                                type="date"
-                                value={editForm.startDate || ''}
-                                onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
-                            />
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <input
-                                id="edit-isActive"
-                                type="checkbox"
-                                checked={editForm.isActive ?? true}
-                                onChange={(e) => setEditForm({ ...editForm, isActive: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 rounded border-gray-300"
-                            />
-                            <Label htmlFor="edit-isActive" value="Active" />
-                        </div>
-                    </div>
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button onClick={handleEditSubmit} disabled={editLoading}>
-                        {editLoading ? <Spinner size="sm" className="mr-2" /> : <HiCheck className="mr-2" />}
-                        Save
-                    </Button>
-                    <Button color="gray" onClick={() => setEditModal({ open: false, user: null })}>
-                        Cancel
-                    </Button>
-                </Modal.Footer>
-            </Modal>
+            <EditMemberModal
+                show={!!editUser}
+                user={editUser}
+                teams={teams}
+                onClose={() => setEditUser(null)}
+                onSubmit={handleEditSubmit}
+            />
 
             {/* Reset Password Modal */}
-            <Modal show={resetModal.open} onClose={() => setResetModal({ open: false, user: null })}>
-                <Modal.Header>Reset Password: {resetModal.user?.name}</Modal.Header>
-                <Modal.Body>
-                    {resetError && (
-                        <Alert color="failure" className="mb-4">{resetError}</Alert>
-                    )}
-                    <div>
-                        <Label htmlFor="new-password" value="New Password (min 8 characters)" />
-                        <TextInput
-                            id="new-password"
-                            type="password"
-                            value={newPassword}
-                            onChange={(e) => setNewPassword(e.target.value)}
-                            placeholder="Enter new password"
-                        />
-                    </div>
-                </Modal.Body>
-                <Modal.Footer>
-                    <Button onClick={handleResetSubmit} disabled={resetLoading || newPassword.length < 8}>
-                        {resetLoading ? <Spinner size="sm" className="mr-2" /> : <HiKey className="mr-2" />}
-                        Reset Password
-                    </Button>
-                    <Button color="gray" onClick={() => setResetModal({ open: false, user: null })}>
-                        Cancel
-                    </Button>
-                </Modal.Footer>
-            </Modal>
+            <ResetPasswordModal
+                show={!!resetUser}
+                userName={resetUser?.name}
+                onClose={() => setResetUser(null)}
+                onSubmit={handleResetSubmit}
+            />
 
             {/* Create User Modal */}
-            <Modal show={createModal} onClose={() => { setCreateModal(false); resetCreateForm(); }}>
+            <Modal show={createModal} onClose={() => { if (!createLoading) { setCreateModal(false); resetCreateForm(); } }}>
                 <Modal.Header>Thêm nhân viên mới</Modal.Header>
                 <Modal.Body>
                     {createError && (
@@ -568,6 +406,7 @@ export default function AdminMembersPage() {
                                     value={createForm.employeeCode}
                                     onChange={(e) => setCreateForm({ ...createForm, employeeCode: e.target.value })}
                                     placeholder="EMP001"
+                                    maxLength={MAX_LENGTHS.employeeCode}
                                 />
                             </div>
                             <div>
@@ -591,6 +430,7 @@ export default function AdminMembersPage() {
                                 value={createForm.name}
                                 onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
                                 placeholder="Nguyễn Văn A"
+                                maxLength={MAX_LENGTHS.name}
                             />
                         </div>
 
@@ -602,6 +442,7 @@ export default function AdminMembersPage() {
                                 value={createForm.email}
                                 onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
                                 placeholder="user@company.com"
+                                maxLength={MAX_LENGTHS.email}
                             />
                         </div>
 
@@ -612,6 +453,7 @@ export default function AdminMembersPage() {
                                 value={createForm.username}
                                 onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })}
                                 placeholder="Optional"
+                                maxLength={MAX_LENGTHS.username}
                             />
                         </div>
 
@@ -623,6 +465,7 @@ export default function AdminMembersPage() {
                                 value={createForm.password}
                                 onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
                                 placeholder="Min 8 characters"
+                                maxLength={MAX_LENGTHS.password}
                             />
                         </div>
 
@@ -671,27 +514,14 @@ export default function AdminMembersPage() {
                         {createLoading ? <Spinner size="sm" className="mr-2" /> : <HiCheck className="mr-2" />}
                         Tạo nhân viên
                     </Button>
-                    <Button color="gray" onClick={() => { setCreateModal(false); resetCreateForm(); }}>
+                    <Button color="gray" onClick={() => { setCreateModal(false); resetCreateForm(); }} disabled={createLoading}>
                         Hủy
                     </Button>
                 </Modal.Footer>
             </Modal>
 
             {/* Toast */}
-            {toast.show && (
-                <div className="fixed bottom-4 right-4 z-50">
-                    <Toast>
-                        <div className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${toast.type === 'success'
-                            ? 'bg-green-100 text-green-500'
-                            : 'bg-red-100 text-red-500'
-                            }`}>
-                            {toast.type === 'success' ? <HiCheck className="h-5 w-5" /> : <HiX className="h-5 w-5" />}
-                        </div>
-                        <div className="ml-3 text-sm font-normal">{toast.message}</div>
-                        <Toast.Toggle onClick={() => setToast({ ...toast, show: false })} />
-                    </Toast>
-                </div>
-            )}
+            <ToastNotification {...toast} onClose={hideToast} />
         </div>
     );
 }
