@@ -51,8 +51,8 @@ export const getTeams = (config) => client.get('/teams', config);
  *   }] 
  * }
  */
-export const getTodayAttendance = (params) =>
-    client.get('/attendance/today', { params });
+export const getTodayAttendance = (params, config) =>
+    client.get('/attendance/today', { params, ...config });
 
 
 // ============================================

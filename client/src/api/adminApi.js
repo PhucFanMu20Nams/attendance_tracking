@@ -36,6 +36,18 @@ export const getHolidays = (year, config) =>
 export const createHoliday = (data) =>
     client.post('/admin/holidays', data);
 
+/**
+ * Create holidays in date range.
+ * Roles: ADMIN only
+ * @param {Object} data - Range data
+ * @param {string} data.startDate - Start date YYYY-MM-DD
+ * @param {string} data.endDate - End date YYYY-MM-DD
+ * @param {string} data.name - Holiday name for all dates
+ * @returns {Promise} { created: number, skipped: number, dates: string[] }
+ */
+export const createHolidayRange = (data) =>
+    client.post('/admin/holidays/range', data);
+
 
 // ============================================
 // USER MANAGEMENT
@@ -59,3 +71,17 @@ export const createHoliday = (data) =>
  */
 export const createUser = (data) =>
     client.post('/admin/users', data);
+
+/**
+ * Get paginated users list.
+ * Roles: ADMIN only
+ * @param {Object} params - Query parameters
+ * @param {number} [params.page=1] - Page number
+ * @param {number} [params.limit=20] - Items per page (max 100)
+ * @param {string} [params.search] - Search by name/email/employeeCode
+ * @param {boolean} [params.includeDeleted=false] - Include soft-deleted users
+ * @param {Object} [config] - Optional axios config
+ * @returns {Promise} { items: [...], pagination: { page, limit, total, totalPages } }
+ */
+export const getAdminUsers = (params, config) =>
+    client.get('/admin/users', { params, ...config });
