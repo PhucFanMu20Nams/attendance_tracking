@@ -47,6 +47,10 @@ const userSchema = new mongoose.Schema(
     },
     startDate: {
       type: Date
+    },
+    deletedAt: {
+      type: Date,
+      default: null
     }
   },
   {
@@ -55,7 +59,7 @@ const userSchema = new mongoose.Schema(
 );
 
 // Remove passwordHash in convert to JSON (API response)
-userSchema.methods.toJSON = function() {
+userSchema.methods.toJSON = function () {
   const obj = this.toObject();
   delete obj.passwordHash;
   delete obj.__v;

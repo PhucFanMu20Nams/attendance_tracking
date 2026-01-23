@@ -7,7 +7,9 @@ const STATUS_COLOR_MAP = {
     ON_TIME: 'green',
     LATE: 'red',
     EARLY_LEAVE: 'yellow',
+    LATE_AND_EARLY: 'purple', // NEW v2.3: combined late check-in + early leave
     MISSING_CHECKOUT: 'yellow',
+    MISSING_CHECKIN: 'orange', // Edge case: checkout without checkin
     WEEKEND_OR_HOLIDAY: 'gray',
     ABSENT: 'white',
     WORKING: 'white',

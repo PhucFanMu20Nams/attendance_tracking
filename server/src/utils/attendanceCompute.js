@@ -1,4 +1,45 @@
-import { isToday, isWeekend, getMinutesDiff, createTimeInGMT7 } from './dateUtils.js';
+import { isToday, isWeekend, getMinutesDiff, createTimeInGMT7, getDateKey } from './dateUtils.js';
+
+/**
+ * Normalize dateKey to "YYYY-MM-DD" format in GMT+7.
+ * Handles: Date object, ISO string, or already formatted string.
+ * @param {Date|string} date - Date to normalize
+ * @returns {string} "YYYY-MM-DD" format in GMT+7
+ */
+function normalizeDateKey(date) {
+  if (!date) return '';
+  // If already "YYYY-MM-DD" format (10 chars, has dashes)
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return date;
+  }
+  // If ISO string like "2026-01-22T01:45:00.000Z"
+  // Fix A: Convert to Date first for proper GMT+7 boundary detection
+  // Example: "2026-01-21T18:30:00.000Z" in GMT+7 is 01:30 Jan 22, not Jan 21
+  if (typeof date === 'string' && date.includes('T')) {
+    const d = new Date(date);
+    return isNaN(d.getTime()) ? date.split('T')[0] : getDateKey(d);
+  }
+  // If Date object - use getDateKey for proper GMT+7 conversion
+  // Fix B: toISOString() returns UTC which can shift the date boundary
+  if (date instanceof Date) {
+    return getDateKey(date); // Uses Asia/Ho_Chi_Minh timezone
+  }
+  // Fallback: try to convert
+  return String(date).split('T')[0];
+}
+
+/**
+ * Normalize timestamp to Date object for consistent comparisons.
+ * @param {Date|string|number} timestamp - Timestamp to normalize
+ * @returns {Date|null} Date object or null if invalid
+ */
+function normalizeTimestamp(timestamp) {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) return timestamp;
+  // String or number -> convert to Date
+  const date = new Date(timestamp);
+  return isNaN(date.getTime()) ? null : date;
+}
 
 /**
  * Compute all attendance fields (status, lateMinutes, workMinutes, otMinutes).
@@ -9,10 +50,22 @@ import { isToday, isWeekend, getMinutesDiff, createTimeInGMT7 } from './dateUtil
  * @returns {Object} { status, lateMinutes, workMinutes, otMinutes }
  */
 export function computeAttendance(attendance, holidayDates = new Set()) {
+  // Fix A: Guard against null/undefined attendance to prevent destructuring crash
+  if (!attendance) {
+    return { status: 'UNKNOWN', lateMinutes: 0, workMinutes: 0, otMinutes: 0 };
+  }
+
   const { date, checkInAt, checkOutAt } = attendance;
 
+  // Fix #2: Normalize date to "YYYY-MM-DD" format for consistent lookups
+  const dateKey = normalizeDateKey(date);
+  
+  // Fix #1: Normalize timestamps to Date objects for consistent comparisons
+  const checkIn = normalizeTimestamp(checkInAt);
+  const checkOut = normalizeTimestamp(checkOutAt);
+
   // Rule from RULES.md: "If date is Weekend/Holiday → WEEKEND/HOLIDAY"
-  if (isWeekend(date) || holidayDates.has(date)) {
+  if (isWeekend(dateKey) || holidayDates.has(dateKey)) {
     return {
       status: 'WEEKEND_OR_HOLIDAY',
       lateMinutes: 0,
@@ -21,41 +74,53 @@ export function computeAttendance(attendance, holidayDates = new Set()) {
     };
   }
 
-  const today = isToday(date);
+  const today = isToday(dateKey);
+
+  // Fix #7: Has checkOut but no checkIn → MISSING_CHECKIN (edge case: forgot to check in)
+  if (!checkIn && checkOut) {
+    return {
+      status: 'MISSING_CHECKIN',
+      lateMinutes: 0,
+      workMinutes: 0,
+      otMinutes: 0
+    };
+  }
 
   // Today + checked in + not checked out = WORKING
-  if (today && checkInAt && !checkOutAt) {
+  if (today && checkIn && !checkOut) {
     return {
       status: 'WORKING',
-      lateMinutes: computeLateMinutes(date, checkInAt),
+      lateMinutes: computeLateMinutes(dateKey, checkIn),
       workMinutes: 0,
       otMinutes: 0
     };
   }
 
   // Past day + checked in + not checked out = MISSING_CHECKOUT
-  if (!today && checkInAt && !checkOutAt) {
+  if (!today && checkIn && !checkOut) {
     return {
       status: 'MISSING_CHECKOUT',
-      lateMinutes: computeLateMinutes(date, checkInAt),
+      lateMinutes: computeLateMinutes(dateKey, checkIn),
       workMinutes: 0,
       otMinutes: 0
     };
   }
 
   // Both checkIn and checkOut exist
-  if (checkInAt && checkOutAt) {
-    const lateMinutes = computeLateMinutes(date, checkInAt);
-    const workMinutes = computeWorkMinutes(date, checkInAt, checkOutAt);
-    const otMinutes = computeOtMinutes(date, checkOutAt);
-    const isEarlyLeave = checkIsEarlyLeave(date, checkOutAt);
+  if (checkIn && checkOut) {
+    const lateMinutes = computeLateMinutes(dateKey, checkIn);
+    const workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut);
+    const otMinutes = computeOtMinutes(dateKey, checkOut);
+    const isEarlyLeave = checkIsEarlyLeave(dateKey, checkOut);
 
-    // Priority: LATE (Red) > EARLY_LEAVE (Yellow) > ON_TIME (Green)
-    // Per RULES.md UI Colors: each status maps to exactly one color
+    // Priority: LATE_AND_EARLY (Purple) > LATE (Red) > EARLY_LEAVE (Yellow) > ON_TIME (Green)
+    // Per RULES.md v2.3 §3.3: LATE_AND_EARLY is highest severity
     let status = 'ON_TIME';
 
-    if (lateMinutes > 0) {
-      status = 'LATE'; // Red - most severe, takes priority
+    if (lateMinutes > 0 && isEarlyLeave) {
+      status = 'LATE_AND_EARLY'; // Purple - NEW v2.3: both late AND early leave
+    } else if (lateMinutes > 0) {
+      status = 'LATE'; // Red - most severe single violation
     } else if (isEarlyLeave) {
       status = 'EARLY_LEAVE'; // Yellow - less severe
     }
@@ -94,8 +159,14 @@ export function computeLateMinutes(dateKey, checkInAt) {
 /**
  * Calculate work minutes from check-in to check-out, with lunch deduction.
  * Rule: Deduct 60 mins if checkIn < 12:00 AND checkOut > 13:00 (span lunch window)
+ * Fix #3 & #4: Clamp to 0 to prevent negative minutes from bad data
  */
 export function computeWorkMinutes(dateKey, checkInAt, checkOutAt) {
+  // Fix #3: Guard against checkOut before checkIn (bad data)
+  if (checkOutAt < checkInAt) {
+    return 0;
+  }
+
   const totalMinutes = getMinutesDiff(checkInAt, checkOutAt);
 
   // Check if work interval spans lunch window (12:00-13:00 GMT+7)
@@ -105,10 +176,11 @@ export function computeWorkMinutes(dateKey, checkInAt, checkOutAt) {
   const spansLunch = checkInAt < lunchStart && checkOutAt > lunchEnd;
 
   if (spansLunch) {
-    return totalMinutes - 60; // Deduct lunch break
+    // Fix #4: Clamp to 0 to prevent negative when totalMinutes < 60
+    return Math.max(0, totalMinutes - 60);
   }
 
-  return totalMinutes;
+  return Math.max(0, totalMinutes);
 }
 
 /**

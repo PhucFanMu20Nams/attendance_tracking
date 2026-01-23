@@ -23,6 +23,7 @@ router.post('/users/:id/reset-password', authenticate, userController.resetPassw
 // Per API_SPEC.md#L402-L412
 router.post('/holidays', authenticate, holidayController.createHoliday);
 router.get('/holidays', authenticate, holidayController.getHolidays);
+router.post('/holidays/range', authenticate, holidayController.createHolidayRange);
 
 export default router;
 

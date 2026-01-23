@@ -130,21 +130,32 @@ export const updateUser = async (req, res) => {
             }
         }
 
-        // Reject null values for optional fields (project guideline: no null, use undefined/$unset)
-        if (updateData.teamId === null) {
+        // Handle teamId: empty string means "clear team assignment" (P1 fix)
+        let unsetTeamId = false;
+        if (updateData.teamId === '') {
+            // Mark for $unset operation
+            unsetTeamId = true;
+            delete updateData.teamId;
+        } else if (updateData.teamId === null) {
             return res.status(400).json({
-                message: 'teamId cannot be null. Omit field to keep current value.'
+                message: 'teamId cannot be null. Use empty string to clear team assignment.'
             });
-        }
-
-        if (updateData.startDate === null) {
-            return res.status(400).json({
-                message: 'startDate cannot be null. Omit field to keep current value.'
-            });
+        } else if (updateData.teamId !== undefined) {
+            // Validate teamId format if provided
+            if (!mongoose.Types.ObjectId.isValid(updateData.teamId)) {
+                return res.status(400).json({
+                    message: 'Invalid teamId format'
+                });
+            }
         }
 
         // Validate startDate if provided (prevent cast error → 500)
         if (updateData.startDate !== undefined) {
+            if (updateData.startDate === null) {
+                return res.status(400).json({
+                    message: 'startDate cannot be null. Omit field to keep current value.'
+                });
+            }
             const parsedDate = new Date(updateData.startDate);
             if (Number.isNaN(parsedDate.getTime())) {
                 return res.status(400).json({
@@ -154,26 +165,26 @@ export const updateUser = async (req, res) => {
             updateData.startDate = parsedDate;
         }
 
-        // Validate teamId format if provided
-        if (updateData.teamId !== undefined) {
-            if (!mongoose.Types.ObjectId.isValid(updateData.teamId)) {
-                return res.status(400).json({
-                    message: 'Invalid teamId format'
-                });
-            }
-        }
-
         // Check if there's anything to update
-        if (Object.keys(updateData).length === 0) {
+        if (Object.keys(updateData).length === 0 && !unsetTeamId) {
             return res.status(400).json({
                 message: 'No valid fields to update'
             });
         }
 
+        // Build update operation with $set and $unset
+        const updateOp = {};
+        if (Object.keys(updateData).length > 0) {
+            updateOp.$set = updateData;
+        }
+        if (unsetTeamId) {
+            updateOp.$unset = { teamId: 1 };
+        }
+
         // Update user
         const updatedUser = await User.findByIdAndUpdate(
             id,
-            updateData,
+            updateOp,
             { new: true, runValidators: true }
         )
             .select('_id employeeCode name email username role teamId isActive startDate createdAt updatedAt')
@@ -342,9 +353,12 @@ export const createUser = async (req, res) => {
             return res.status(400).json({ message: 'Invalid teamId format' });
         }
 
-        // Validate startDate if provided (consistent with updateUser pattern)
+        // Validate startDate if provided (P1 fix: reject null to prevent 1970 epoch bug)
         let parsedStartDate;
         if (startDate !== undefined) {
+            if (startDate === null) {
+                return res.status(400).json({ message: 'startDate cannot be null' });
+            }
             parsedStartDate = new Date(startDate);
             if (Number.isNaN(parsedStartDate.getTime())) {
                 return res.status(400).json({ message: 'Invalid startDate' });
@@ -407,12 +421,12 @@ export const createUser = async (req, res) => {
         // ============================================
         // ERROR HANDLING
         // ============================================
-        
+
         // Handle duplicate key errors (MongoDB 11000)
         if (error.code === 11000) {
             const field = Object.keys(error.keyPattern)[0];
-            return res.status(409).json({ 
-                message: `${field.charAt(0).toUpperCase() + field.slice(1)} already exists` 
+            return res.status(409).json({
+                message: `${field.charAt(0).toUpperCase() + field.slice(1)} already exists`
             });
         }
 
@@ -426,11 +440,17 @@ export const createUser = async (req, res) => {
     }
 };
 /**
- * GET /api/admin/users
- * Get all users (Admin only).
+ * GET /api/admin/users (UPDATED v2.3)
+ * Get paginated users (Admin only).
  * 
- * Response: { items: [...sanitized users...] }
- * Per API_SPEC.md#L355-L372
+ * Query params:
+ * - page: number (default 1)
+ * - limit: number (default 20, max 100)
+ * - search: string (search by name/email/employeeCode)
+ * - includeDeleted: boolean (default false)
+ * 
+ * Response: { items, pagination: { page, limit, total, totalPages } }
+ * Per API_SPEC.md L367-400
  */
 export const getAllUsers = async (req, res) => {
     try {
@@ -439,12 +459,50 @@ export const getAllUsers = async (req, res) => {
             return res.status(403).json({ message: 'Access denied' });
         }
 
-        const users = await User.find({})
-            .select('_id employeeCode name email username role teamId isActive startDate createdAt updatedAt')
+        // Parse query params with defaults
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+        const search = req.query.search?.trim() || '';
+        const includeDeleted = req.query.includeDeleted === 'true';
+
+        // Build query filter
+        const filter = {};
+
+        // Soft delete filter (requires deletedAt field in User model)
+        if (!includeDeleted) {
+            filter.deletedAt = null;
+        }
+
+        // Search filter (name, email, or employeeCode)
+        if (search) {
+            filter.$or = [
+                { name: { $regex: search, $options: 'i' } },
+                { email: { $regex: search, $options: 'i' } },
+                { employeeCode: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        // Count total (for pagination)
+        const total = await User.countDocuments(filter);
+        const totalPages = Math.ceil(total / limit);
+
+        // Fetch paginated results
+        const users = await User.find(filter)
+            .select('_id employeeCode name email username role teamId isActive startDate deletedAt createdAt updatedAt')
             .sort({ employeeCode: 1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
             .lean();
 
-        return res.status(200).json({ items: users });
+        return res.status(200).json({
+            items: users,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages
+            }
+        });
     } catch (error) {
         // OWASP A05/A09: Verbose logging in dev, generic in prod
         if (process.env.NODE_ENV !== 'production') {
