@@ -1,0 +1,84 @@
+/**
+ * Request Management API Layer
+ * 
+ * Endpoints:
+ * - GET /api/requests/me - Get my requests with pagination
+ * - GET /api/requests/pending - Get pending requests (Manager/Admin)
+ * - POST /api/requests - Create new request
+ * - POST /api/requests/:id/approve - Approve request (Manager/Admin)
+ * - POST /api/requests/:id/reject - Reject request (Manager/Admin)
+ * 
+ * @see API_SPEC.md for detailed specifications
+ */
+
+import client from './client';
+
+// ============================================
+// MY REQUESTS
+// ============================================
+
+/**
+ * Get my requests with pagination.
+ * Roles: EMPLOYEE, MANAGER, ADMIN (own requests only)
+ * @param {Object} [params={}] - Query parameters
+ * @param {number} [params.page=1] - Page number (min: 1)
+ * @param {number} [params.limit=20] - Items per page (max: 100)
+ * @param {string} [params.status] - Filter by status (PENDING | APPROVED | REJECTED)
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { items: Array, pagination: { page, limit, total, totalPages } }
+ */
+export const getMyRequests = (params = {}, config = {}) =>
+    client.get('/requests/me', { ...config, params });
+
+/**
+ * Create a new attendance adjustment request.
+ * Roles: EMPLOYEE, MANAGER, ADMIN
+ * @param {Object} payload - Request data
+ * @param {string} payload.date - Date in YYYY-MM-DD format (GMT+7)
+ * @param {string} [payload.requestedCheckInAt] - ISO timestamp for check-in (optional)
+ * @param {string} [payload.requestedCheckOutAt] - ISO timestamp for check-out (optional)
+ * @param {string} payload.reason - Reason for adjustment (required, max 1000 chars)
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { request: Object }
+ */
+export const createRequest = (payload, config = {}) =>
+    client.post('/requests', payload, config);
+
+// ============================================
+// PENDING REQUESTS (MANAGER/ADMIN)
+// ============================================
+
+/**
+ * Get pending requests with pagination (RBAC-aware).
+ * - MANAGER: Only requests from users in the same team
+ * - ADMIN: All pending requests company-wide
+ * @param {Object} [params={}] - Query parameters
+ * @param {number} [params.page=1] - Page number (min: 1)
+ * @param {number} [params.limit=20] - Items per page (max: 100)
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { items: Array, pagination: { page, limit, total, totalPages } }
+ */
+export const getPendingRequests = (params = {}, config = {}) =>
+    client.get('/requests/pending', { ...config, params });
+
+/**
+ * Approve a pending request (RBAC-aware).
+ * - MANAGER: Can approve requests from users in the same team only
+ * - ADMIN: Can approve any request
+ * @param {string} requestId - Request's ObjectId
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { request: Object }
+ */
+export const approveRequest = (requestId, config = {}) =>
+    client.post(`/requests/${requestId}/approve`, {}, config);
+
+/**
+ * Reject a pending request (RBAC-aware).
+ * - MANAGER: Can reject requests from users in the same team only
+ * - ADMIN: Can reject any request
+ * @param {string} requestId - Request's ObjectId
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { request: Object }
+ */
+export const rejectRequest = (requestId, config = {}) =>
+    client.post(`/requests/${requestId}/reject`, {}, config);
