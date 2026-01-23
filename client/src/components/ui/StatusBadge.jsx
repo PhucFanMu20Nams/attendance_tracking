@@ -22,8 +22,10 @@ import { Badge } from 'flowbite-react';
 const STATUS_CONFIG = {
     ON_TIME: { color: 'success', label: 'Đúng giờ' },
     LATE: { color: 'warning', label: 'Đi muộn' },
+    LATE_AND_EARLY: { color: 'purple', label: 'Muộn & Về sớm' }, // NEW v2.3
     WORKING: { color: 'info', label: 'Đang làm việc' },
     MISSING_CHECKOUT: { color: 'warning', label: 'Thiếu checkout' },
+    MISSING_CHECKIN: { color: 'failure', label: 'Thiếu checkin' }, // Edge case
     ABSENT: { color: 'failure', label: 'Vắng mặt' },
     WEEKEND_OR_HOLIDAY: { color: 'gray', label: 'Nghỉ' },
     EARLY_LEAVE: { color: 'warning', label: 'Về sớm' },
