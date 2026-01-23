@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     Table, Button, Modal, Spinner, Alert, Select, Label, TextInput, Toast
 } from 'flowbite-react';
-import { HiPlus, HiCheck, HiX } from 'react-icons/hi';
-import { getHolidays, createHoliday } from '../api/adminApi';
+import { HiPlus, HiCheck, HiX, HiCalendar } from 'react-icons/hi';
+import { getHolidays, createHoliday, createHolidayRange } from '../api/adminApi';
 import { PageHeader } from '../components/ui';
 
 /**
@@ -12,7 +12,7 @@ import { PageHeader } from '../components/ui';
  * Features:
  * - List holidays by year (default: current year GMT+7)
  * - Year selector (last 3 years + next 2 years)
- * - Create holiday via modal
+ * - Create holiday via modal (single date or date range)
  * - Form validation (date required, name required)
  * - Handle duplicate date error (409)
  * 
@@ -35,12 +35,15 @@ export default function AdminHolidaysPage() {
 
     // Modal states
     const [createModal, setCreateModal] = useState(false);
+    const [createMode, setCreateMode] = useState('single'); // 'single' | 'range'
     const [formData, setFormData] = useState({ date: '', name: '' });
+    const [rangeFormData, setRangeFormData] = useState({ startDate: '', endDate: '', name: '' });
     const [formLoading, setFormLoading] = useState(false);
     const [formError, setFormError] = useState('');
 
     // Toast state
     const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+    const toastTimeoutRef = useRef(null);
 
     // Generate year options (last 3 years + next 2 years)
     const yearOptions = (() => {
@@ -83,11 +86,13 @@ export default function AdminHolidaysPage() {
     // Open create modal with reset form
     const handleOpenCreate = () => {
         setFormData({ date: '', name: '' });
+        setRangeFormData({ startDate: '', endDate: '', name: '' });
         setFormError('');
+        setCreateMode('single');
         setCreateModal(true);
     };
 
-    // Submit create holiday
+    // Submit create single holiday
     const handleCreateSubmit = async () => {
         // Client-side validation
         if (!formData.date) {
@@ -121,11 +126,76 @@ export default function AdminHolidaysPage() {
         }
     };
 
-    // Toast helper
-    const showToast = (message, type = 'success') => {
-        setToast({ show: true, message, type });
-        setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+    // Submit create holiday range
+    const handleRangeSubmit = async () => {
+        // Client-side validation
+        if (!rangeFormData.startDate) {
+            setFormError('Vui lòng chọn ngày bắt đầu');
+            return;
+        }
+        if (!rangeFormData.endDate) {
+            setFormError('Vui lòng chọn ngày kết thúc');
+            return;
+        }
+        if (rangeFormData.endDate < rangeFormData.startDate) {
+            setFormError('Ngày kết thúc phải >= ngày bắt đầu');
+            return;
+        }
+        if (!rangeFormData.name.trim()) {
+            setFormError('Vui lòng nhập tên ngày nghỉ');
+            return;
+        }
+
+        setFormLoading(true);
+        setFormError('');
+        try {
+            const res = await createHolidayRange({
+                startDate: rangeFormData.startDate,
+                endDate: rangeFormData.endDate,
+                name: rangeFormData.name.trim()
+            });
+            setCreateModal(false);
+            showToast(
+                `Đã tạo ${res.data.created} ngày nghỉ` +
+                (res.data.skipped > 0 ? `, bỏ qua ${res.data.skipped} ngày trùng` : ''),
+                'success'
+            );
+            fetchHolidays(); // Refresh list
+        } catch (err) {
+            setFormError(err.response?.data?.message || 'Tạo ngày nghỉ thất bại');
+        } finally {
+            setFormLoading(false);
+        }
     };
+
+    // Handle submit based on mode
+    const handleSubmit = () => {
+        if (createMode === 'single') {
+            handleCreateSubmit();
+        } else {
+            handleRangeSubmit();
+        }
+    };
+
+    // Toast helper with cleanup to avoid state update on unmount (P3 fix)
+    const showToast = (message, type = 'success') => {
+        if (toastTimeoutRef.current) {
+            clearTimeout(toastTimeoutRef.current);
+        }
+        setToast({ show: true, message, type });
+        toastTimeoutRef.current = setTimeout(() => {
+            setToast({ show: false, message: '', type: 'success' });
+        }, 3000);
+    };
+
+    // Cleanup toast timeout on unmount
+    useEffect(() => {
+        return () => {
+            if (toastTimeoutRef.current) {
+                clearTimeout(toastTimeoutRef.current);
+            }
+        };
+    }, []);
 
     return (
         <div>
@@ -195,43 +265,107 @@ export default function AdminHolidaysPage() {
                 </p>
             )}
 
-            {/* Create Holiday Modal */}
-            <Modal show={createModal} onClose={() => setCreateModal(false)}>
+            {/* Create Holiday Modal - prevent close while loading (P3 fix) */}
+            <Modal show={createModal} onClose={() => !formLoading && setCreateModal(false)}>
                 <Modal.Header>Thêm ngày nghỉ</Modal.Header>
                 <Modal.Body>
                     {formError && (
                         <Alert color="failure" className="mb-4">{formError}</Alert>
                     )}
-                    <div className="space-y-4">
-                        <div>
-                            <Label htmlFor="holiday-date" value="Ngày *" />
-                            <TextInput
-                                id="holiday-date"
-                                type="date"
-                                value={formData.date}
-                                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                                required
-                            />
-                        </div>
-                        <div>
-                            <Label htmlFor="holiday-name" value="Tên ngày nghỉ *" />
-                            <TextInput
-                                id="holiday-name"
-                                type="text"
-                                value={formData.name}
-                                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                                placeholder="VD: Tết Dương lịch"
-                                required
-                            />
-                        </div>
+
+                    {/* Mode toggle */}
+                    <div className="mb-4 flex items-center gap-4">
+                        <Button
+                            color={createMode === 'single' ? 'info' : 'gray'}
+                            size="sm"
+                            onClick={() => { setCreateMode('single'); setFormError(''); }}
+                        >
+                            <HiCalendar className="mr-2 h-4 w-4" />
+                            Ngày đơn
+                        </Button>
+                        <Button
+                            color={createMode === 'range' ? 'info' : 'gray'}
+                            size="sm"
+                            onClick={() => { setCreateMode('range'); setFormError(''); }}
+                        >
+                            <HiCalendar className="mr-2 h-4 w-4" />
+                            Khoảng ngày
+                        </Button>
                     </div>
+
+                    {/* Single date form */}
+                    {createMode === 'single' && (
+                        <div className="space-y-4">
+                            <div>
+                                <Label htmlFor="holiday-date" value="Ngày *" />
+                                <TextInput
+                                    id="holiday-date"
+                                    type="date"
+                                    value={formData.date}
+                                    onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="holiday-name" value="Tên ngày nghỉ *" />
+                                <TextInput
+                                    id="holiday-name"
+                                    type="text"
+                                    value={formData.name}
+                                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                                    placeholder="VD: Tết Dương lịch"
+                                    required
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Range form */}
+                    {createMode === 'range' && (
+                        <div className="space-y-4">
+                            <div>
+                                <Label htmlFor="range-start" value="Ngày bắt đầu *" />
+                                <TextInput
+                                    id="range-start"
+                                    type="date"
+                                    value={rangeFormData.startDate}
+                                    onChange={(e) => setRangeFormData({ ...rangeFormData, startDate: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="range-end" value="Ngày kết thúc *" />
+                                <TextInput
+                                    id="range-end"
+                                    type="date"
+                                    value={rangeFormData.endDate}
+                                    onChange={(e) => setRangeFormData({ ...rangeFormData, endDate: e.target.value })}
+                                    required
+                                />
+                            </div>
+                            <div>
+                                <Label htmlFor="range-name" value="Tên ngày nghỉ *" />
+                                <TextInput
+                                    id="range-name"
+                                    type="text"
+                                    value={rangeFormData.name}
+                                    onChange={(e) => setRangeFormData({ ...rangeFormData, name: e.target.value })}
+                                    placeholder="VD: Nghỉ Tết Nguyên Đán"
+                                    required
+                                />
+                            </div>
+                            <Alert color="info" className="text-sm">
+                                Tối đa 30 ngày. Các ngày đã tồn tại sẽ được bỏ qua.
+                            </Alert>
+                        </div>
+                    )}
                 </Modal.Body>
                 <Modal.Footer>
-                    <Button onClick={handleCreateSubmit} disabled={formLoading}>
+                    <Button onClick={handleSubmit} disabled={formLoading}>
                         {formLoading ? <Spinner size="sm" className="mr-2" /> : <HiCheck className="mr-2" />}
                         Lưu
                     </Button>
-                    <Button color="gray" onClick={() => setCreateModal(false)}>
+                    <Button color="gray" onClick={() => setCreateModal(false)} disabled={formLoading}>
                         Hủy
                     </Button>
                 </Modal.Footer>
@@ -241,11 +375,10 @@ export default function AdminHolidaysPage() {
             {toast.show && (
                 <div className="fixed bottom-4 right-4 z-50">
                     <Toast>
-                        <div className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                            toast.type === 'success'
-                                ? 'bg-green-100 text-green-500'
-                                : 'bg-red-100 text-red-500'
-                        }`}>
+                        <div className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${toast.type === 'success'
+                            ? 'bg-green-100 text-green-500'
+                            : 'bg-red-100 text-red-500'
+                            }`}>
                             {toast.type === 'success' ? <HiCheck className="h-5 w-5" /> : <HiX className="h-5 w-5" />}
                         </div>
                         <div className="ml-3 text-sm font-normal">{toast.message}</div>
