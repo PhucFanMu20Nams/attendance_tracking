@@ -172,7 +172,9 @@ export default function TimesheetMatrixPage() {
             ON_TIME: 'bg-green-200 text-green-800',
             LATE: 'bg-red-200 text-red-800',
             EARLY_LEAVE: 'bg-yellow-200 text-yellow-800',
+            LATE_AND_EARLY: 'bg-purple-200 text-purple-800', // NEW v2.3: combined late + early
             MISSING_CHECKOUT: 'bg-yellow-200 text-yellow-800',
+            MISSING_CHECKIN: 'bg-orange-200 text-orange-800', // Edge case
             ABSENT: 'bg-gray-100 text-gray-500',
             WEEKEND_OR_HOLIDAY: 'bg-gray-300 text-gray-600', // Per RULES.md section 3.1
             WORKING: 'bg-blue-100 text-blue-800',
@@ -187,7 +189,9 @@ export default function TimesheetMatrixPage() {
             ON_TIME: '✓',
             LATE: 'M',      // Muộn
             EARLY_LEAVE: 'S', // Sớm
+            LATE_AND_EARLY: 'M+S', // NEW v2.3: Muộn + Sớm
             MISSING_CHECKOUT: '?',
+            MISSING_CHECKIN: '!', // Edge case
             ABSENT: 'V',    // Vắng
             WEEKEND_OR_HOLIDAY: '-', // Per RULES.md section 3.1
             WORKING: 'W',
@@ -294,6 +298,7 @@ export default function TimesheetMatrixPage() {
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-green-200 border"></span> Đúng giờ (✓)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-red-200 border"></span> Đi muộn (M)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-yellow-200 border"></span> Về sớm/Thiếu checkout (S/?)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-purple-200 border"></span> Muộn & Về sớm (M+S)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-100 border"></span> Vắng (V)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-300 border"></span> Cuối tuần/Lễ (-)</div>
                     <div className="flex items-center gap-1"><span className="w-4 h-4 bg-blue-100 border"></span> Đang làm (W)</div>

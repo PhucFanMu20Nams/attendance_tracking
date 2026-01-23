@@ -8,7 +8,10 @@ import { useAuth } from '../context/AuthContext';
  * LoginPage: Login form with identifier (email/username) and password.
  * - Uses AuthContext.login() for authentication
  * - Shows error Alert on failure
- * - Redirects to /dashboard on success
+ * - Redirects based on user role:
+ *   - ADMIN → /admin/members
+ *   - MANAGER → /team/members
+ *   - EMPLOYEE → /dashboard
  */
 export default function LoginPage() {
     const navigate = useNavigate();
@@ -21,10 +24,15 @@ export default function LoginPage() {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        
+        // Double-submit guard
+        if (loading) return;
+        
         setError('');
 
-        // Client-side validation before API call
-        if (!identifier.trim() || !password.trim()) {
+        // Client-side validation (don't trim password - may contain intentional spaces)
+        const trimmedIdentifier = identifier.trim();
+        if (!trimmedIdentifier || !password) {
             setError('Please enter identifier and password');
             return;
         }
@@ -32,8 +40,20 @@ export default function LoginPage() {
         setLoading(true);
 
         try {
-            await login(identifier.trim(), password);
-            navigate('/dashboard', { replace: true });
+            const data = await login(trimmedIdentifier, password);
+            
+            // Role-based redirect after successful login
+            // Normalize role to handle case sensitivity and whitespace
+            const userRole = String(data.user?.role || '').trim().toUpperCase();
+            let redirectPath = '/dashboard'; // Default for EMPLOYEE
+            
+            if (userRole === 'ADMIN') {
+                redirectPath = '/admin/members';
+            } else if (userRole === 'MANAGER') {
+                redirectPath = '/team/members';
+            }
+            
+            navigate(redirectPath, { replace: true });
         } catch (err) {
             // Handle both API errors and network errors gracefully
             const msg =
@@ -72,7 +92,11 @@ export default function LoginPage() {
                             id="identifier"
                             type="text"
                             value={identifier}
-                            onChange={(e) => setIdentifier(e.target.value)}
+                            onChange={(e) => {
+                                setIdentifier(e.target.value);
+                                if (error) setError('');
+                            }}
+                            autoComplete="username"
                             required
                         />
                     </div>
@@ -83,7 +107,11 @@ export default function LoginPage() {
                             id="password"
                             type="password"
                             value={password}
-                            onChange={(e) => setPassword(e.target.value)}
+                            onChange={(e) => {
+                                setPassword(e.target.value);
+                                if (error) setError('');
+                            }}
+                            autoComplete="current-password"
                             required
                         />
                     </div>
