@@ -5,6 +5,26 @@ import Attendance from '../models/Attendance.js';
 import { getDateKey } from '../utils/dateUtils.js';
 
 /**
+ * Validate and parse a date value.
+ * Throws 400 error if the value is present but cannot be parsed as a valid Date.
+ * 
+ * @param {*} value - Value to parse (string, Date, or null/undefined)
+ * @param {string} fieldName - Field name for error message
+ * @returns {Date|null} Parsed Date or null if value is falsy
+ */
+const toValidDate = (value, fieldName) => {
+  if (!value) return null;
+
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    const error = new Error(`${fieldName} is invalid`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return d;
+};
+
+/**
  * Create a new request for attendance adjustment.
  * Validates date format, ensures at least one time field, and checks time ordering.
  * 
@@ -22,7 +42,11 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     throw error;
   }
 
-  if (!requestedCheckInAt && !requestedCheckOutAt) {
+  // Validate and parse time fields early (prevents Invalid Date bugs)
+  const checkIn = toValidDate(requestedCheckInAt, 'requestedCheckInAt');
+  const checkOut = toValidDate(requestedCheckOutAt, 'requestedCheckOutAt');
+
+  if (!checkIn && !checkOut) {
     const error = new Error('At least one of requestedCheckInAt or requestedCheckOutAt is required');
     error.statusCode = 400;
     throw error;
@@ -43,8 +67,8 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   }
 
   // If both times provided, check-out must be after check-in
-  if (requestedCheckInAt && requestedCheckOutAt) {
-    if (new Date(requestedCheckOutAt) <= new Date(requestedCheckInAt)) {
+  if (checkIn && checkOut) {
+    if (checkOut <= checkIn) {
       const error = new Error('requestedCheckOutAt must be after requestedCheckInAt');
       error.statusCode = 400;
       throw error;
@@ -52,8 +76,8 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   }
 
   // MVP: No overnight shifts - timestamps must be on the same date as request.date
-  if (requestedCheckInAt) {
-    const checkInDateKey = getDateKey(new Date(requestedCheckInAt));
+  if (checkIn) {
+    const checkInDateKey = getDateKey(checkIn);
     if (checkInDateKey !== date) {
       const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
       error.statusCode = 400;
@@ -61,8 +85,8 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     }
   }
 
-  if (requestedCheckOutAt) {
-    const checkOutDateKey = getDateKey(new Date(requestedCheckOutAt));
+  if (checkOut) {
+    const checkOutDateKey = getDateKey(checkOut);
     if (checkOutDateKey !== date) {
       const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
       error.statusCode = 400;
@@ -73,18 +97,20 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   // Business rule: If attendance doesn't exist for this date, checkInAt is required
   // (because Attendance.checkInAt is a required field)
   // Also validate partial requests against existing attendance data
-  const existingAttendance = await Attendance.findOne({ userId, date });
+  const existingAttendance = await Attendance.findOne({ userId, date })
+    .select('checkInAt checkOutAt')
+    .lean();
 
-  if (!requestedCheckInAt && !existingAttendance) {
+  if (!checkIn && !existingAttendance) {
     const error = new Error('Cannot create new attendance without check-in time. Please include requestedCheckInAt');
     error.statusCode = 400;
     throw error;
   }
 
   // Validate checkOut-only: must be > existing checkInAt
-  if (requestedCheckOutAt && !requestedCheckInAt && existingAttendance) {
+  if (checkOut && !checkIn && existingAttendance) {
     const existingCheckIn = existingAttendance.checkInAt;
-    if (existingCheckIn && new Date(requestedCheckOutAt) <= new Date(existingCheckIn)) {
+    if (existingCheckIn && checkOut <= new Date(existingCheckIn)) {
       const error = new Error('requestedCheckOutAt must be after existing check-in time');
       error.statusCode = 400;
       throw error;
@@ -92,9 +118,9 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   }
 
   // Validate checkIn-only: must be < existing checkOutAt (if exists)
-  if (requestedCheckInAt && !requestedCheckOutAt && existingAttendance) {
+  if (checkIn && !checkOut && existingAttendance) {
     const existingCheckOut = existingAttendance.checkOutAt;
-    if (existingCheckOut && new Date(requestedCheckInAt) >= new Date(existingCheckOut)) {
+    if (existingCheckOut && checkIn >= new Date(existingCheckOut)) {
       const error = new Error('requestedCheckInAt must be before existing check-out time');
       error.statusCode = 400;
       throw error;
@@ -115,44 +141,92 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     throw error;
   }
 
-  const request = await Request.create({
-    userId,
-    date,
-    type: 'ADJUST_TIME',
-    requestedCheckInAt,
-    requestedCheckOutAt,
-    reason: reason.trim(),
-    status: 'PENDING'
-  });
+  // Race condition guard: If concurrent requests pass the findOne check,
+  // the partial unique index will reject the duplicate with E11000
+  try {
+    const request = await Request.create({
+      userId,
+      date,
+      type: 'ADJUST_TIME',
+      requestedCheckInAt: checkIn,
+      requestedCheckOutAt: checkOut,
+      reason: reason.trim(),
+      status: 'PENDING'
+    });
 
-  return request;
+    return request;
+  } catch (err) {
+    // Catch MongoDB duplicate key error (E11000) from partial unique index
+    if (err?.code === 11000) {
+      const error = new Error('You already have a pending request for this date. Please wait for approval or cancel the existing request.');
+      error.statusCode = 409;
+      throw error;
+    }
+    throw err;
+  }
 };
 
 /**
- * Get all requests for a specific user.
- * Returns sorted by date descending (most recent first).
+ * Get all requests for a specific user with pagination.
+ * Returns only items - use countMyRequests for total count.
  * 
  * @param {string} userId - User's ObjectId
- * @returns {Promise<Array>} Array of requests
+ * @param {Object} options - { skip, limit, status }
+ * @returns {Promise<Array>} Array of request items
  */
-export const getMyRequests = async (userId) => {
-  const requests = await Request.find({ userId })
-    .populate('approvedBy', 'name employeeCode')
-    .sort({ date: -1, createdAt: -1 });
+export const getMyRequests = async (userId, options = {}) => {
+  const { skip = 0, limit = 20, status } = options;
 
-  return requests;
+  // Build filter
+  const filter = { userId };
+
+  // Optional status filter (PENDING, APPROVED, REJECTED)
+  if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status.toUpperCase())) {
+    filter.status = status.toUpperCase();
+  }
+
+  // Query items only (count is done separately by countMyRequests)
+  const items = await Request.find(filter)
+    .populate('approvedBy', 'name employeeCode')
+    .sort({ createdAt: -1 })  // Newest first
+    .skip(skip)
+    .limit(limit)
+    .lean();
+
+  return items;
 };
 
 /**
- * Get pending requests with RBAC scope enforcement.
- * MANAGER: Only requests from users in the same team
- * ADMIN: All pending requests company-wide
+ * Count requests for a user (without fetching items).
+ * Used for pagination to get total count efficiently.
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {Object} options - { status }
+ * @returns {Promise<number>} Total count
+ */
+export const countMyRequests = async (userId, options = {}) => {
+  const { status } = options;
+
+  // Build filter
+  const filter = { userId };
+
+  // Optional status filter (PENDING, APPROVED, REJECTED)
+  if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status.toUpperCase())) {
+    filter.status = status.toUpperCase();
+  }
+
+  return Request.countDocuments(filter);
+};
+
+/**
+ * Build RBAC filter for pending requests.
+ * Shared by both count and query functions.
  * 
  * @param {Object} user - Current user (req.user)
- * @returns {Promise<Array>} Array of pending requests
+ * @returns {Promise<Object>} MongoDB query filter
  */
-export const getPendingRequests = async (user) => {
-  let query = { status: 'PENDING' };
+const buildPendingFilter = async (user) => {
+  const filter = { status: 'PENDING' };
 
   // RBAC: Manager only sees team members' requests
   if (user.role === 'MANAGER') {
@@ -166,14 +240,45 @@ export const getPendingRequests = async (user) => {
     const teamMembers = await User.find({ teamId: user.teamId }).select('_id');
     const teamMemberIds = teamMembers.map(member => member._id);
 
-    query.userId = { $in: teamMemberIds };
+    filter.userId = { $in: teamMemberIds };
   }
 
   // ADMIN sees all pending requests (no additional filter)
+  return filter;
+};
 
-  const requests = await Request.find(query)
+/**
+ * Count pending requests with RBAC scope enforcement.
+ * Used for pagination total count.
+ * 
+ * @param {Object} user - Current user (req.user)
+ * @returns {Promise<number>} Total count
+ */
+export const countPendingRequests = async (user) => {
+  const filter = await buildPendingFilter(user);
+  return Request.countDocuments(filter);
+};
+
+/**
+ * Get pending requests with RBAC scope enforcement and pagination.
+ * MANAGER: Only requests from users in the same team
+ * ADMIN: All pending requests company-wide
+ * 
+ * @param {Object} user - Current user (req.user)
+ * @param {Object} options - { skip, limit }
+ * @returns {Promise<Array>} Array of pending requests
+ */
+export const getPendingRequests = async (user, options = {}) => {
+  const { skip = 0, limit = 20 } = options;
+
+  const filter = await buildPendingFilter(user);
+
+  const requests = await Request.find(filter)
     .populate('userId', 'name employeeCode email teamId')
-    .sort({ createdAt: 1 });
+    .sort({ createdAt: 1 })  // Oldest first for approval queue
+    .skip(skip)
+    .limit(limit)
+    .lean();
 
   return requests;
 };
@@ -339,7 +444,7 @@ export const rejectRequest = async (requestId, approver) => {
       }
     },
     { new: true }
-  );
+  ).populate('userId', 'name employeeCode email teamId');
 
   // If no document was updated, it means status was not PENDING (race condition lost)
   if (!updatedRequest) {
@@ -374,9 +479,9 @@ async function updateAttendanceFromRequest(request) {
 
   // Defensive check: cannot create new attendance without checkInAt
   // (validation in createRequest should prevent this, but guard here for safety)
-  const existing = await Attendance.findOne({ userId, date }).select('_id');
+  const exists = await Attendance.exists({ userId, date });
 
-  if (!existing && !requestedCheckInAt) {
+  if (!exists && !requestedCheckInAt) {
     const error = new Error('Cannot create attendance without check-in time');
     error.statusCode = 400;
     throw error;

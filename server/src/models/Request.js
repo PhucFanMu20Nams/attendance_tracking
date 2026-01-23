@@ -54,5 +54,15 @@ const requestSchema = new mongoose.Schema(
 requestSchema.index({ userId: 1, status: 1 });
 requestSchema.index({ status: 1 });
 
+// Partial unique index: Prevent duplicate PENDING requests for same (userId, date, type)
+// This guards against race conditions in createRequest
+requestSchema.index(
+  { userId: 1, date: 1, type: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'PENDING' }
+  }
+);
+
 export { REQUEST_TYPES, REQUEST_STATUSES };
 export default mongoose.model('Request', requestSchema);

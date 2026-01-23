@@ -1,4 +1,5 @@
 import * as requestService from '../services/requestService.js';
+import { parsePaginationParams, clampPage, buildPaginatedResponse } from '../utils/pagination.js';
 
 /**
  * POST /api/requests
@@ -38,17 +39,35 @@ export const createRequest = async (req, res) => {
 
 /**
  * GET /api/requests/me
- * Get all requests for the current user
+ * Get all requests for the current user with pagination
  */
 export const getMyRequests = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const items = await requestService.getMyRequests(userId);
+    // Step 1: Parse pagination params (no skip yet - skip depends on total)
+    const { page, limit } = parsePaginationParams(req.query);
 
-    return res.status(200).json({
-      items
+    // Optional status filter from query
+    const status = req.query.status || null;
+
+    // Step 2: Get total count ONLY (optimized - 1 DB call instead of querying items)
+    const total = await requestService.countMyRequests(userId, { status });
+
+    // Step 3: Clamp page to valid range and calculate skip
+    const { page: clampedPage, skip } = clampPage(page, total, limit);
+
+    // Step 4: Query items with CLAMPED skip (1 DB call - no redundant count)
+    const items = await requestService.getMyRequests(userId, {
+      skip,
+      limit,
+      status
     });
+
+    // Step 5: Build response with clamped page
+    return res.status(200).json(
+      buildPaginatedResponse(items, total, clampedPage, limit)
+    );
   } catch (error) {
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
@@ -59,17 +78,31 @@ export const getMyRequests = async (req, res) => {
 
 /**
  * GET /api/requests/pending
- * Get pending requests (Manager: team only, Admin: company-wide)
+ * Get pending requests (Manager: team only, Admin: company-wide) with pagination
  */
 export const getPendingRequests = async (req, res) => {
   try {
     const user = req.user;
 
-    const items = await requestService.getPendingRequests(user);
+    // Step 1: Parse pagination params
+    const { page, limit } = parsePaginationParams(req.query);
 
-    return res.status(200).json({
-      items
+    // Step 2: Get total count (1 DB call)
+    const total = await requestService.countPendingRequests(user);
+
+    // Step 3: Clamp page to valid range and calculate skip
+    const { page: clampedPage, skip } = clampPage(page, total, limit);
+
+    // Step 4: Query items with CLAMPED skip (1 DB call)
+    const items = await requestService.getPendingRequests(user, {
+      skip,
+      limit
     });
+
+    // Step 5: Build paginated response
+    return res.status(200).json(
+      buildPaginatedResponse(items, total, clampedPage, limit)
+    );
   } catch (error) {
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
