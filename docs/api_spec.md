@@ -1,4 +1,4 @@
-# API Specification — Attendance Web App (v2.3)
+# API Specification — Attendance Web App (v2.5)
 
 Base URL: /api  
 Protocol: HTTP/HTTPS + JSON  
@@ -16,6 +16,37 @@ Timezone: Asia/Ho_Chi_Minh (GMT+7) — ALL dateKey computations must follow RULE
 - Enforce RBAC + anti-IDOR on every route with :id.
 - Whitelist request body fields (avoid mass assignment).
 - Deny-by-default on authorization.
+
+### Pagination convention (v2.3+)
+For endpoints supporting pagination, the following query params and response format apply:
+
+Query params:
+- page: number (default 1, minimum 1)
+- limit: number (default 20, maximum 100)
+
+Response format:
+```json
+{
+  "items": [...],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "totalPages": 8
+  }
+}
+```
+
+Pagination rules:
+- `totalPages = 0` when `total = 0` (no items found)
+- `page` is clamped to `[1, totalPages]` to prevent out-of-bounds requests
+- If requested page exceeds totalPages, the clamped page is returned
+
+Paginated endpoints:
+- GET /admin/users (v2.3)
+- GET /requests/me (v2.4)
+- GET /requests/pending (v2.4)
+- GET /attendance/today (v2.5)
 
 ---
 
@@ -109,8 +140,8 @@ Response:
   }
 ]
 
-## GET /attendance/today?scope=team|company&teamId?
-NEW: Today activity for Member Management (Admin/Manager).
+## GET /attendance/today (UPDATED v2.5)
+Today activity for Member Management (Admin/Manager) with pagination.
 
 Roles:
 - MANAGER: scope=team only (teamId ignored; use token.user.teamId)
@@ -118,9 +149,16 @@ Roles:
   - scope=team requires teamId
   - scope=company returns all users
 
+Query params:
+- scope: "team" | "company" (required for ADMIN, forced to "team" for MANAGER)
+- teamId: ObjectId (required for ADMIN when scope=team)
+- page: number (optional, default 1)
+- limit: number (optional, default 20, max 100)
+
 Behavior:
 - Always uses today computed in GMT+7.
-- For each user in scope:
+- Count total users first, then clamp page to valid range.
+- For each user in current page:
   - Find today's attendance record (userId + dateKey)
   - Compute status using RULES.md:
     - If today has no record => status = null (NOT ABSENT)
@@ -128,6 +166,7 @@ Behavior:
     - etc.
 
 Response:
+```json
 {
   "date": "YYYY-MM-DD",
   "items": [
@@ -147,14 +186,21 @@ Response:
         "date": "YYYY-MM-DD",
         "checkInAt": "ISO",
         "checkOutAt": "ISO|null"
-      } | null,
+      },
       "computed": {
         "status": "WORKING|ON_TIME|LATE|EARLY_LEAVE|LATE_AND_EARLY|MISSING_CHECKOUT|WEEKEND_OR_HOLIDAY|ABSENT|LEAVE|null",
         "lateMinutes": 0
       }
     }
-  ]
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "totalPages": 8
+  }
 }
+```
 
 ---
 
@@ -191,20 +237,85 @@ Rules:
 - Max leave range: 30 days
 - Cannot overlap with existing approved leave
 
-## GET /requests/me
+## GET /requests/me (UPDATED v2.4)
 Roles: EMPLOYEE | MANAGER | ADMIN
-Response:
-- items: [ request... ]
 
-## GET /requests/pending
+Query params:
+- page: number (optional, default 1)
+- limit: number (optional, default 20, max 100)
+- status: string (optional, filter by PENDING|APPROVED|REJECTED)
+
+Response:
+```json
+{
+  "items": [
+    {
+      "_id": "...",
+      "userId": "...",
+      "date": "YYYY-MM-DD",
+      "type": "ADJUST_TIME",
+      "requestedCheckInAt": "ISO string | null",
+      "requestedCheckOutAt": "ISO string | null",
+      "reason": "...",
+      "status": "PENDING | APPROVED | REJECTED",
+      "approvedBy": { "_id", "name", "employeeCode" },
+      "approvedAt": "ISO string | null",
+      "createdAt": "ISO string",
+      "updatedAt": "ISO string"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "totalPages": 8
+  }
+}
+```
+
+## GET /requests/pending (UPDATED v2.4)
 Roles: MANAGER | ADMIN
+
+Query params:
+- page: number (optional, default 1)
+- limit: number (optional, default 20, max 100)
 
 Behavior:
 - MANAGER: only requests from users in the same team
-- ADMIN: all requests
+- ADMIN: all requests company-wide
 
 Response:
-- items: [ request... ]
+```json
+{
+  "items": [
+    {
+      "_id": "...",
+      "userId": {
+        "_id": "...",
+        "name": "...",
+        "employeeCode": "...",
+        "email": "...",
+        "teamId": "..."
+      },
+      "date": "YYYY-MM-DD",
+      "type": "ADJUST_TIME",
+      "requestedCheckInAt": "ISO string | null",
+      "requestedCheckOutAt": "ISO string | null",
+      "reason": "...",
+      "status": "PENDING",
+      "createdAt": "ISO string",
+      "updatedAt": "ISO string"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 25,
+    "totalPages": 2
+  }
+}
+```
+
 
 ## POST /requests/:id/approve
 Roles: MANAGER | ADMIN

@@ -1,4 +1,4 @@
-# MVP Scope — Attendance Web App (MERN) (v2.3)
+# MVP Scope — Attendance Web App (MERN) (v2.5)
 
 ## Goal
 Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
@@ -83,6 +83,17 @@ Manager:
 - Break tracking
 - Payroll/salary and complex OT payment rules
 - Import employees from Excel/HR systems
+
+## Performance & Security Notes (v2.5)
+
+### Query Optimization
+- **Requests**: Use `.select()` + `.lean()` for lightweight queries when checking existing attendance
+- **Attendance Update**: Use `.exists()` instead of `findOne()` when only checking for document existence (faster, returns boolean)
+- **Race Conditions**: Partial unique index `{ userId, date, type }` with `status: PENDING` filter prevents duplicate pending requests at DB level. Service layer catches E11000 error and maps to 409 Conflict.
+
+### Pagination
+- All paginated endpoints follow pattern: `parsePaginationParams → count → clamp → find → buildPaginatedResponse`
+- Endpoints: `/admin/users`, `/requests/me`, `/requests/pending`, `/attendance/today` (v2.5)
 
 ## MVP Definition of Done
 - Login works

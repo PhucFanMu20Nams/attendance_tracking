@@ -442,10 +442,11 @@ Commit: `feat(server): holiday range creation endpoint`
 
 ## Part B — Medium Complexity
 
-### B1) Pagination for Admin Users
+### B1) Pagination for Admin Users ✅ DONE
 Files:
 - `server/src/controllers/userController.js#getAllUsers` - add page/limit/search
 - `client/src/pages/AdminMembersPage.jsx` - add Flowbite Pagination
+- `client/src/hooks/usePagination.js` (NEW) - reusable pagination hook
 
 Commit: `feat(server): pagination for admin users endpoint`
 
@@ -478,13 +479,43 @@ Files:
 
 Commit: `feat(server): cross-midnight checkout support`
 
+### C3) Pagination for Requests + Approvals Pages (NEW v2.4)
+Files:
+- `server/src/utils/pagination.js` (NEW) - reusable pagination helper
+- `server/src/services/requestService.js` - add options param (skip, limit, status)
+- `server/src/controllers/requestController.js` - add pagination params
+- `client/src/api/requestApi.js` (NEW) - API module for requests
+- `client/src/components/requests/CreateRequestForm.jsx` (EXTRACTED)
+- `client/src/components/requests/MyRequestsTable.jsx` (EXTRACTED)
+- `client/src/pages/RequestsPage.jsx` - refactored with usePagination
+- `client/src/components/approvals/PendingRequestsTable.jsx` (EXTRACTED)
+- `client/src/components/approvals/ApprovalModal.jsx` (EXTRACTED)
+- `client/src/pages/ApprovalsPage.jsx` - refactored with usePagination
+
+Commit:
+- `feat(server): pagination for requests endpoints`
+- `refactor(client): extract request components + usePagination integration`
+
+### C4) Today Activity Pagination (NEW v2.5)
+Files:
+- `server/src/controllers/attendanceController.js#getTodayAttendance` - add page/limit params
+- `server/src/services/attendanceService.js#getTodayActivity` - count + clamp + skip/limit
+- `client/src/components/members/TodayActivityTable.jsx` - add Flowbite Pagination
+- `client/src/pages/AdminMembersPage.jsx` - usePagination for Today Activity mode
+
+Commit:
+- `feat(server): pagination for today activity endpoint`
+- `feat(client): today activity table pagination`
+
 ---
 
 ## Done Checklist (Day 6)
 - [ ] E) Role redirect works for all 3 roles
 - [ ] C) LATE_AND_EARLY shows in matrix with purple color
 - [ ] D) Holiday range creates multiple records, skips duplicates
-- [ ] A) Pagination works with 50+ users, has page controls
+- [x] A) Pagination works with 50+ users, has page controls
 - [ ] B) Soft delete hides user, restore brings back, purge after 15 days
 - [ ] F) Leave request can be created and approved (if implemented)
 - [ ] G) Cross-midnight checkout works within 24h (if implemented)
+- [ ] C3) Request/Approval pages load paginated data with controls
+- [ ] C4) Today Activity loads paginated data with scope filter (v2.5)

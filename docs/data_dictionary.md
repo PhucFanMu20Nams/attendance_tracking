@@ -1,6 +1,7 @@
-# Data Dictionary — MongoDB Collections (v2.3)
+# Data Dictionary — MongoDB Collections (v2.5)
 
 v2.3 adds soft delete, leave requests, and pagination support.
+v2.5 adds Today Activity pagination.
 
 ## 1) users
 Purpose: accounts + roles + team assignment.

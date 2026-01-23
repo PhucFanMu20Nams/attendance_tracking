@@ -1,4 +1,4 @@
-# Rules — Attendance Logic (v2.3)
+# Rules — Attendance Logic (v2.5)
 
 Timezone: Asia/Ho_Chi_Minh (GMT+7)  
 All dateKey calculations MUST use GMT+7.
@@ -120,6 +120,13 @@ On approve:
 - "Today activity" always refers to todayKey in GMT+7.
 - If an employee has no attendance record today:
   - status must be null (NOT ABSENT)
+
+### 7.4 Pagination Rules (NEW v2.5)
+- Default limit: 20, max limit: 100
+- Paginated endpoints: `/admin/users`, `/requests/me`, `/requests/pending`, `/attendance/today`
+- Pattern: count total → clamp page → skip/limit
+- Response format: `{ items, pagination: { page, limit, total, totalPages } }`
+- Clamping: if requested page > totalPages, return last page with items
 
 ### 7.2 Scope & RBAC
 - ADMIN:
