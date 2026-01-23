@@ -14,7 +14,7 @@ export function getTodayDateKey() {
  * Critical: ensures date boundaries respect GMT+7, not server's local time.
  */
 export function getDateKey(date) {
-  const dateStr = date.toLocaleDateString('en-CA', { 
+  const dateStr = date.toLocaleDateString('en-CA', {
     timeZone: TIMEZONE,
     year: 'numeric',
     month: '2-digit',
@@ -38,11 +38,11 @@ export function isToday(dateKey) {
 export function isWeekend(dateKey) {
   // Split dateKey and create Date in GMT+7 explicitly
   const [year, month, day] = dateKey.split('-').map(Number);
-  
+
   // Create date at noon GMT+7 to avoid edge cases
   // Noon ensures we're safely in the middle of the target day regardless of DST
   const date = new Date(Date.UTC(year, month - 1, day, 12 - 7, 0, 0));
-  
+
   const dayOfWeek = date.getUTCDay();
   return dayOfWeek === 0 || dayOfWeek === 6; // 0 = Sunday, 6 = Saturday
 }
@@ -58,7 +58,7 @@ export function getTimeInGMT7(date) {
     hour: '2-digit',
     minute: '2-digit'
   });
-  
+
   const [hours, minutes] = timeStr.split(':').map(Number);
   return { hours, minutes };
 }
@@ -78,9 +78,9 @@ export function getMinutesDiff(startDate, endDate) {
  */
 export function createTimeInGMT7(dateKey, hours, minutes) {
   const [year, month, day] = dateKey.split('-').map(Number);
-  
+
   // Subtract 7 hours from GMT+7 to get UTC equivalent
   const dateInGMT7 = new Date(Date.UTC(year, month - 1, day, hours - 7, minutes));
-  
+
   return dateInGMT7;
 }
