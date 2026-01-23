@@ -528,13 +528,30 @@ describe('8. Null Semantics (teamId/startDate)', () => {
         expect(res.body.message).toMatch(/null|cannot/i);
     });
 
-    it('teamId: "" (empty string) -> 400', async () => {
+    it('teamId: "" (empty string) -> 200 (clears team assignment)', async () => {
+        // First assign a team
+        await request(app)
+            .patch(`/api/admin/users/${employeeId}`)
+            .set('Authorization', `Bearer ${adminToken}`)
+            .send({ teamId: team1Id.toString() });
+
+        // Now clear it with empty string
         const res = await request(app)
             .patch(`/api/admin/users/${employeeId}`)
             .set('Authorization', `Bearer ${adminToken}`)
             .send({ teamId: '' });
 
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(200);
+
+        // Verify teamId is now undefined/null
+        const user = await User.findById(employeeId);
+        expect(user.teamId).toBeUndefined();
+
+        // Restore team
+        await request(app)
+            .patch(`/api/admin/users/${employeeId}`)
+            .set('Authorization', `Bearer ${adminToken}`)
+            .send({ teamId: team1Id.toString() });
     });
 });
 
