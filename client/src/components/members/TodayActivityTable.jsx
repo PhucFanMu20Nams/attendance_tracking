@@ -1,4 +1,4 @@
-import { Table, Button } from 'flowbite-react';
+import { Table, Button, Pagination } from 'flowbite-react';
 import { HiEye, HiPencil, HiKey } from 'react-icons/hi';
 import { StatusBadge } from '../ui';
 import { formatTime } from '../../utils/dateTimeFormat';
@@ -12,6 +12,7 @@ import { formatTime } from '../../utils/dateTimeFormat';
  * - Shows attendance status with StatusBadge
  * - Displays check-in/out times
  * - Action buttons: View Detail, Edit, Reset Password
+ * - Pagination controls (v2.5+)
  * - Responsive overflow handling
  * - Empty state when no data
  * - Accessibility (aria-labels)
@@ -19,20 +20,33 @@ import { formatTime } from '../../utils/dateTimeFormat';
  * 
  * @param {Object} props
  * @param {Array} props.members - List of { user, attendance, computed }
+ * @param {Object} [props.pagination] - { page, totalPages } (v2.5+)
+ * @param {Function} [props.onPageChange] - (page: number) => void (v2.5+)
  * @param {Function} props.onViewDetail - (userId: string) => void
  * @param {Function} props.onEdit - (user: Object) => void
  * @param {Function} props.onResetPassword - (user: Object) => void
  */
 export default function TodayActivityTable({
     members,
+    pagination,
+    onPageChange,
     onViewDetail,
     onEdit,
     onResetPassword
 }) {
-    const safeMembers = members || [];
-    const isEmpty = safeMembers.length === 0;
+    // Filter valid members upfront to avoid sparse array with nulls
+    const validMembers = (members || []).filter(item => item?.user?._id);
+    const isEmpty = validMembers.length === 0;
+    const safePagination = pagination || { page: 1, totalPages: 0 };
+
+    // P2 FIX: Clamp currentPage to valid range
+    const currentPage = Math.min(
+        Math.max(1, safePagination.page || 1),
+        safePagination.totalPages || 1
+    );
 
     return (
+        <>
         <div className="overflow-x-auto">
             <Table striped>
                 <Table.Head>
@@ -53,10 +67,8 @@ export default function TodayActivityTable({
                             </Table.Cell>
                         </Table.Row>
                     ) : (
-                        safeMembers.map((item) => {
-                            // P1 FIX: Guard against null/undefined user
-                            const user = item?.user;
-                            if (!user?._id) return null;
+                        validMembers.map((item) => {
+                            const user = item.user;
 
                             return (
                                 <Table.Row key={user._id} className="bg-white">
@@ -119,5 +131,18 @@ export default function TodayActivityTable({
                 </Table.Body>
             </Table>
         </div>
+
+        {/* Pagination Controls - only show if more than 1 page */}
+        {safePagination.totalPages > 1 && (
+            <div className="mt-4 flex justify-center">
+                <Pagination
+                    currentPage={currentPage}
+                    totalPages={safePagination.totalPages}
+                    onPageChange={(p) => onPageChange?.(p)}
+                    showIcons
+                />
+            </div>
+        )}
+        </>
     );
 }

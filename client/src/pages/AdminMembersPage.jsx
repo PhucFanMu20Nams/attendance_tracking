@@ -4,12 +4,11 @@ import { HiRefresh, HiPlus } from 'react-icons/hi';
 import { useNavigate } from 'react-router-dom';
 
 // API
-import { getTeams, updateUser, resetPassword } from '../api/memberApi';
+import { getTeams, getTodayAttendance, updateUser, resetPassword } from '../api/memberApi';
 import { getAdminUsers } from '../api/adminApi';
 
 // Hooks
 import { usePagination } from '../hooks/usePagination';
-import { useMembersFetch } from '../hooks/useMembersFetch';
 import { useToast } from '../hooks/useToast';
 
 // Components - UI
@@ -58,6 +57,7 @@ export default function AdminMembersPage() {
     const [scope, setScope] = useState('company');
     const [teamId, setTeamId] = useState('');
     const [teams, setTeams] = useState(null); // null = loading, [] = empty
+    const [teamsFetchError, setTeamsFetchError] = useState(false); // P2 FIX: Track fetch error
 
     // Modal states
     const [editUser, setEditUser] = useState(null);
@@ -68,17 +68,27 @@ export default function AdminMembersPage() {
     // CUSTOM HOOKS
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Today Activity data
+    // Today Activity data (paginated v2.5+)
+    // P1 FIX: Only enable when scope != 'team' OR teamId is selected (prevent 400 spam)
+    const todayEnabled = viewMode === 'today' && (scope !== 'team' || !!teamId);
+
     const {
-        members,
-        todayDate,
+        items: members,
+        pagination: todayPagination,
         loading: todayLoading,
         error: todayError,
+        setPage: setTodayPage,
         refetch: refetchToday
-    } = useMembersFetch({
-        enabled: viewMode === 'today',
-        scope,
-        teamId
+    } = usePagination({
+        fetchFn: async (params, signal) => {
+            const res = await getTodayAttendance(params, { signal });
+            return {
+                items: res.data.items ?? [],
+                pagination: res.data.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 0 }
+            };
+        },
+        enabled: todayEnabled,
+        extraParams: { scope, teamId: scope === 'team' ? teamId : undefined }
     });
 
     // All Users data (paginated)
@@ -95,7 +105,10 @@ export default function AdminMembersPage() {
         // P1 FIX: Signal signature - hook passes raw signal, not { signal }
         fetchFn: async (params, signal) => {
             const res = await getAdminUsers(params, { signal });
-            return { items: res.data.items, pagination: res.data.pagination };
+            return { 
+                items: res.data.items ?? [], // P4 FIX: Null-safety consistent with Today Activity
+                pagination: res.data.pagination 
+            };
         },
         enabled: viewMode === 'all'
     });
@@ -113,11 +126,13 @@ export default function AdminMembersPage() {
                 const res = await getTeams();
                 if (isMounted) {
                     setTeams(res.data.items || []);
+                    setTeamsFetchError(false); // Clear error on success
                 }
             } catch (err) {
                 console.error('Failed to fetch teams:', err);
                 if (isMounted) {
-                    setTeams([]); // Set empty on error to stop loading state
+                    setTeams([]); // Set empty to stop loading state
+                    setTeamsFetchError(true); // P2 FIX: Set error flag for UX
                 }
             }
         };
@@ -136,6 +151,7 @@ export default function AdminMembersPage() {
     const handleEditSubmit = async (data, userId) => {
         try {
             await updateUser(userId, data);
+            setEditUser(null); // P3 FIX: Close modal explicitly
             showToast('Member updated successfully', 'success');
             viewMode === 'today' ? refetchToday() : refetchAllUsers();
         } catch (e) {
@@ -147,6 +163,7 @@ export default function AdminMembersPage() {
         if (!resetUser?._id) return;
         try {
             await resetPassword(resetUser._id, newPassword);
+            setResetUser(null); // P3 FIX: Close modal explicitly
             showToast('Password updated', 'success');
         } catch (e) {
             showToast(e.response?.data?.message || 'Failed to reset password', 'failure');
@@ -154,8 +171,11 @@ export default function AdminMembersPage() {
     };
 
     const handleCreateSuccess = () => {
+        setCreateModal(false); // P3 FIX: Close modal explicitly
         showToast('Member created successfully', 'success');
         viewMode === 'today' ? refetchToday() : refetchAllUsers();
+        // Note: NOT resetting page to 1 because backend sorts by employeeCode (ascending)
+        // New user may not appear on page 1
     };
 
     const handleViewDetail = (userId) => {
@@ -168,8 +188,11 @@ export default function AdminMembersPage() {
 
     const handleViewModeChange = (mode) => {
         setViewMode(mode);
+        // P2 FIX: Reset page for both modes (consistent UX)
         if (mode === 'all') {
-            setPage(1); // Reset page when switching to All Users
+            setPage(1);
+        } else if (mode === 'today') {
+            setTodayPage(1);
         }
     };
 
@@ -179,6 +202,11 @@ export default function AdminMembersPage() {
 
     const isLoading = viewMode === 'today' ? todayLoading : allUsersLoading;
     const error = viewMode === 'today' ? todayError : allUsersError;
+    
+    // Today's date in GMT+7 (Asia/Ho_Chi_Minh) for display in MemberFilters
+    const todayDate = new Date().toLocaleDateString('en-CA', { 
+        timeZone: 'Asia/Ho_Chi_Minh' 
+    }); // Returns 'YYYY-MM-DD'
 
     // ═══════════════════════════════════════════════════════════════════════
     // RENDER
@@ -222,6 +250,7 @@ export default function AdminMembersPage() {
                     teamId={teamId}
                     onTeamChange={setTeamId}
                     teams={teams}
+                    teamsFetchError={teamsFetchError}
                     todayDate={todayDate}
                 />
             )}
@@ -230,7 +259,7 @@ export default function AdminMembersPage() {
                 <MemberSearchBar
                     value={search}
                     onChange={setSearch}
-                    totalCount={pagination.total}
+                    totalCount={pagination?.total ?? 0}
                 />
             )}
 
@@ -257,6 +286,8 @@ export default function AdminMembersPage() {
                     ) : (
                         <TodayActivityTable
                             members={members}
+                            pagination={todayPagination}
+                            onPageChange={setTodayPage}
                             onViewDetail={handleViewDetail}
                             onEdit={setEditUser}
                             onResetPassword={setResetUser}

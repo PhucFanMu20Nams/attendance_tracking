@@ -11,6 +11,7 @@ import { Label, Select } from 'flowbite-react';
  * - Auto-clear teamId when team is removed from list
  * - Mobile responsive layout
  * - Distinguishes between loading (null) and empty ([]) teams
+ * - Shows error message when teams fail to load (v2.5+)
  * 
  * @param {Object} props
  * @param {'company' | 'team'} props.scope - Current scope
@@ -18,6 +19,7 @@ import { Label, Select } from 'flowbite-react';
  * @param {string} props.teamId - Current team ID
  * @param {Function} props.onTeamChange - (teamId: string) => void
  * @param {Array|null} props.teams - List of teams [{ _id, name }], null when loading
+ * @param {boolean} [props.teamsFetchError=false] - Whether teams fetch failed (v2.5+)
  * @param {string} props.todayDate - Today's date for display
  */
 export default function MemberFilters({
@@ -26,6 +28,7 @@ export default function MemberFilters({
     teamId,
     onTeamChange,
     teams,
+    teamsFetchError = false,
     todayDate
 }) {
     // ═══════════════════════════════════════════════════════════════════════
@@ -98,7 +101,13 @@ export default function MemberFilters({
                         disabled={teamsLoading}
                     >
                         <option value="">
-                            {teamsLoading ? 'Loading teams...' : teamsEmpty ? 'No teams available' : 'Select team...'}
+                            {teamsLoading 
+                                ? 'Loading teams...' 
+                                : teamsFetchError 
+                                ? 'Failed to load teams - please refresh' 
+                                : teamsEmpty 
+                                ? 'No teams available' 
+                                : 'Select team...'}
                         </option>
                         {(teams || []).map((team) => (
                             <option key={team._id} value={team._id}>

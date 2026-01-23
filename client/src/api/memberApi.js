@@ -32,7 +32,7 @@ export const getTeams = (config) => client.get('/teams', config);
 // ============================================
 
 /**
- * Get today's attendance for team/company.
+ * Get today's attendance for team/company with pagination support.
  * Roles: MANAGER | ADMIN
  * 
  * Behavior:
@@ -42,17 +42,21 @@ export const getTeams = (config) => client.get('/teams', config);
  * @param {Object} params - Query parameters
  * @param {string} params.scope - 'company' | 'team'
  * @param {string} [params.teamId] - Required when scope='team' for Admin
+ * @param {number} [params.page=1] - Page number (v2.5+)
+ * @param {number} [params.limit=20] - Items per page, max 100 (v2.5+)
+ * @param {Object} [config] - Optional axios config (e.g., { signal } for AbortController)
  * @returns {Promise} { 
  *   date: "YYYY-MM-DD", 
  *   items: [{ 
  *     user: { _id, employeeCode, name, email, ... },
  *     attendance: { date, checkInAt, checkOutAt } | null,
  *     computed: { status, lateMinutes }
- *   }] 
+ *   }],
+ *   pagination: { page, limit, total, totalPages } 
  * }
  */
-export const getTodayAttendance = (params, config) =>
-    client.get('/attendance/today', { params, ...config });
+export const getTodayAttendance = (params = {}, config = {}) =>
+    client.get('/attendance/today', { ...config, params });
 
 
 // ============================================

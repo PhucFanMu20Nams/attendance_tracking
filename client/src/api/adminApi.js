@@ -23,7 +23,7 @@ import client from './client';
  * @returns {Promise} { items: [{ _id, date, name }] }
  */
 export const getHolidays = (year, config) =>
-    client.get('/admin/holidays', { params: { year }, ...config });
+    client.get('/admin/holidays', { ...config, params: { year } });
 
 /**
  * Create a new holiday.
@@ -84,4 +84,4 @@ export const createUser = (data) =>
  * @returns {Promise} { items: [...], pagination: { page, limit, total, totalPages } }
  */
 export const getAdminUsers = (params, config) =>
-    client.get('/admin/users', { params, ...config });
+    client.get('/admin/users', { ...config, params });
