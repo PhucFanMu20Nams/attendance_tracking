@@ -1,4 +1,4 @@
-# MVP Scope — Attendance Web App (MERN) (v2.2)
+# MVP Scope — Attendance Web App (MERN) (v2.3)
 
 ## Goal
 Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
@@ -60,6 +60,21 @@ Manager:
 - View today activity of members in the same team (today only)
 - View member detail (profile fields)
 - View member monthly attendance history (same-team only)
+
+### 9) Enhancements (v2.3)
+
+#### Quick Wins
+- **E) Role-based Redirect**: ADMIN → `/admin/members`, MANAGER → `/team/members`
+- **C) LATE_AND_EARLY Status**: Combined status when both late and early leave
+- **D) Holiday Range**: Create multiple holidays from date range
+
+#### Medium
+- **A) Pagination**: Admin user list with page/limit/search
+- **B) Soft Delete**: 15-day grace period before purge (configurable)
+
+#### Complex (Needs Design)
+- **F) Leave Request**: New request type with date range
+- **G) Cross-midnight OT**: Checkout on next day for overnight shifts
 
 ## Out-of-scope (NOT in MVP)
 - Anti-fraud: GPS/QR/device/IP restriction

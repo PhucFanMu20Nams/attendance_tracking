@@ -1,4 +1,4 @@
-# API Specification — Attendance Web App (v2.2)
+# API Specification — Attendance Web App (v2.3)
 
 Base URL: /api  
 Protocol: HTTP/HTTPS + JSON  
@@ -149,7 +149,7 @@ Response:
         "checkOutAt": "ISO|null"
       } | null,
       "computed": {
-        "status": "WORKING|ON_TIME|LATE|MISSING_CHECKOUT|WEEKEND_OR_HOLIDAY|ABSENT|null",
+        "status": "WORKING|ON_TIME|LATE|EARLY_LEAVE|LATE_AND_EARLY|MISSING_CHECKOUT|WEEKEND_OR_HOLIDAY|ABSENT|LEAVE|null",
         "lateMinutes": 0
       }
     }
@@ -164,7 +164,8 @@ Response:
 Roles: EMPLOYEE | MANAGER | ADMIN
 
 Request body:
-- date: "YYYY-MM-DD"
+- type: "ADJUST_TIME" | "LEAVE" [optional, default "ADJUST_TIME"]
+- date: "YYYY-MM-DD" [required if type=ADJUST_TIME; ignored if type=LEAVE]
 - requestedCheckInAt: ISO string (optional)
 - requestedCheckOutAt: ISO string (optional)
 - reason: string
@@ -178,6 +179,17 @@ Rules:
 
 Response:
 - request: { ... }
+
+### Leave Request (NEW v2.3)
+If type = "LEAVE":
+- leaveStartDate: "YYYY-MM-DD" [required]
+- leaveEndDate: "YYYY-MM-DD" [required, >= leaveStartDate]
+- leaveType: "ANNUAL" | "SICK" | "UNPAID" [optional]
+- reason: string [required]
+
+Rules:
+- Max leave range: 30 days
+- Cannot overlap with existing approved leave
 
 ## GET /requests/me
 Roles: EMPLOYEE | MANAGER | ADMIN
@@ -352,24 +364,40 @@ Request body:
 Response:
 - user: { ...sanitized user fields... }
 
-## GET /admin/users
+## GET /admin/users (UPDATED v2.3)
 Roles: ADMIN
+
+Query params:
+- page: number (optional, default 1)
+- limit: number (optional, default 20, max 100)
+- search: string (optional, search by name/email/employeeCode)
+- includeDeleted: boolean (optional, default false)
+
 Response:
-- items: [
-  {
-    _id,
-    employeeCode,
-    name,
-    email,
-    username,
-    role,
-    teamId,
-    isActive,
-    startDate,
-    createdAt,
-    updatedAt
+{
+  "items": [
+    {
+      "_id",
+      "employeeCode",
+      "name",
+      "email",
+      "username",
+      "role",
+      "teamId",
+      "isActive",
+      "startDate",
+      "deletedAt",
+      "createdAt",
+      "updatedAt"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "totalPages": 8
   }
-]
+}
 
 ## PATCH /admin/users/:id
 Roles: ADMIN
@@ -409,3 +437,56 @@ Request body:
 Roles: ADMIN
 Response:
 - items: [{ date, name }]
+
+## POST /admin/holidays/range (NEW v2.3)
+Roles: ADMIN
+
+Request body:
+- startDate: "YYYY-MM-DD" [required]
+- endDate: "YYYY-MM-DD" [required, >= startDate]
+- name: string [required]
+
+Rules:
+- Max range: 30 days
+- Skip existing dates (no error)
+
+Response:
+{
+  "created": 5,
+  "skipped": 2,
+  "dates": ["2026-01-01", "2026-01-02", ...]
+}
+
+---
+
+# 8) Soft Delete (NEW v2.3)
+
+## DELETE /admin/users/:id
+Roles: ADMIN
+
+Behavior:
+- Sets deletedAt = now
+- User will be purged after SOFT_DELETE_DAYS (configurable, default 15)
+- Cannot delete yourself
+
+Response:
+{
+  "message": "User deleted",
+  "restoreDeadline": "2026-02-06T00:00:00.000Z"
+}
+
+## POST /admin/users/:id/restore
+Roles: ADMIN
+
+Behavior:
+- Sets deletedAt = null
+- Only works if user is soft-deleted and not yet purged
+
+Response:
+{
+  "user": { ...restored user... }
+}
+
+Errors:
+- 404 if user not found or already purged
+- 400 if user not deleted

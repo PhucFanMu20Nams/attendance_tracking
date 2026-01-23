@@ -1,6 +1,8 @@
-# 4-Day Roadmap — Attendance Web App (MERN) (MVP v2.1)
+# 5-Day Roadmap — Attendance Web App (MERN) (MVP v2.3)
 
 > **Goal:** Ship a working MVP in **4 days** (beginner-friendly).  
+> **Day 5:** Member Management enhancement (v2.2 features).  
+> **Day 6:** v2.3 enhancements (pagination, soft delete, leave, etc.)  
 > **Strategy:** Build **Backend + DB first**, then a minimal Frontend that consumes the API.  
 > **Non-goals:** Pretty UI, realtime, anti-fraud, complex shifts.
 
@@ -108,7 +110,8 @@
   - past day + no record => ABSENT (workdays only)
 - Minutes rules:
   - lateMinutes if check-in after 08:45
-  - early leave if check-out before 17:30 (status affects UI)
+  - early leave if check-out before 17:30
+  - LATE_AND_EARLY if both late and early leave (v2.3)
   - otMinutes if check-out after 18:30
   - lunch deduction: -60 mins if span 12:00–13:00
 
@@ -398,3 +401,90 @@ Commit:
 - [ ] Manager sees only same-team members
 - [ ] Manager cannot access other-team members (403)
 - [ ] Today with no attendance record => status null (NOT ABSENT)
+
+---
+
+# Day 6 — Enhancements v2.3 (NEW)
+
+> **Prerequisite:** MVP v2.2 complete and tested.  
+> **Goal:** Implement 7 enhancement features (A-G).
+
+---
+
+## Part A — Quick Wins
+
+### A1) Role-based Redirect
+File: `client/src/pages/LoginPage.jsx`
+- After login success, check user.role
+- ADMIN → `/admin/members`
+- MANAGER → `/team/members`  
+- EMPLOYEE → `/dashboard`
+
+Commit: `feat(client): role-based redirect after login`
+
+### A2) Late + Early Leave Status
+Files:
+- `server/src/utils/attendanceCompute.js` - add LATE_AND_EARLY check
+- `server/src/services/timesheetService.js` - add purple colorKey
+- `client/src/components/ui/StatusBadge.jsx` - add case
+
+Commit: `feat(server): LATE_AND_EARLY combined status`
+
+### A3) Holiday Range Creation
+Files:
+- `server/src/controllers/holidayController.js` - add createHolidayRange
+- `server/src/routes/adminRoutes.js` - add POST /admin/holidays/range
+- `client/src/pages/AdminHolidaysPage.jsx` - add range inputs
+
+Commit: `feat(server): holiday range creation endpoint`
+
+---
+
+## Part B — Medium Complexity
+
+### B1) Pagination for Admin Users
+Files:
+- `server/src/controllers/userController.js#getAllUsers` - add page/limit/search
+- `client/src/pages/AdminMembersPage.jsx` - add Flowbite Pagination
+
+Commit: `feat(server): pagination for admin users endpoint`
+
+### B2) Soft Delete + Restore
+Files:
+- `server/src/models/User.js` - add deletedAt field
+- `server/src/controllers/userController.js` - add softDelete, restore
+- `server/src/jobs/purgeDeletedUsers.js` (NEW) - cron job for purge
+- All user queries - filter by deletedAt: null
+
+Commit: `feat(server): soft delete with configurable purge`
+
+---
+
+## Part C — Complex Features (Needs Design)
+
+### C1) Leave Request (F)
+Files:
+- `server/src/models/Request.js` - add LEAVE type + fields
+- `server/src/services/requestService.js` - handle LEAVE validation
+- `server/src/utils/attendanceCompute.js` - check approved leaves
+- `client/src/pages/RequestsPage.jsx` - leave request form
+
+Commit: `feat(server): leave request type`
+
+### C2) Cross-midnight OT (G)
+Files:
+- `server/src/services/attendanceService.js#checkOut` - find active session
+- `server/src/utils/attendanceCompute.js` - cross-day OT calculation
+
+Commit: `feat(server): cross-midnight checkout support`
+
+---
+
+## Done Checklist (Day 6)
+- [ ] E) Role redirect works for all 3 roles
+- [ ] C) LATE_AND_EARLY shows in matrix with purple color
+- [ ] D) Holiday range creates multiple records, skips duplicates
+- [ ] A) Pagination works with 50+ users, has page controls
+- [ ] B) Soft delete hides user, restore brings back, purge after 15 days
+- [ ] F) Leave request can be created and approved (if implemented)
+- [ ] G) Cross-midnight checkout works within 24h (if implemented)
