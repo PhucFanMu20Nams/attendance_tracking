@@ -3,6 +3,7 @@ import { getTodayDateKey } from '../utils/dateUtils.js';
 import mongoose from 'mongoose';
 import User from '../models/User.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
+import { parsePaginationParams } from '../utils/pagination.js';
 
 /**
  * POST /api/attendance/check-in
@@ -158,11 +159,14 @@ export const getTodayAttendance = async (req, res) => {
       });
     }
 
+    // Parse pagination params (v2.5)
+    const { page, limit } = parsePaginationParams(req.query);
+
     // Fetch holidays for current month (GMT+7)
     const today = getTodayDateKey();
     const holidayDates = await getHolidayDatesForMonth(today.substring(0, 7));
 
-    const result = await attendanceService.getTodayActivity(scope, teamId, holidayDates);
+    const result = await attendanceService.getTodayActivity(scope, teamId, holidayDates, { page, limit });
 
     return res.status(200).json(result);
   } catch (error) {
@@ -244,7 +248,8 @@ export const getAttendanceByUser = async (req, res) => {
       // Manager can only access users in same team (Anti-IDOR at query level)
       targetUser = await User.findOne({
         _id: id,
-        teamId: requestingUserTeamId
+        teamId: requestingUserTeamId,
+        deletedAt: null
       })
         .select('_id')
         .lean();
@@ -256,8 +261,11 @@ export const getAttendanceByUser = async (req, res) => {
         });
       }
     } else {
-      // Admin can access any user
-      targetUser = await User.findById(id)
+      // Admin can access any user (but not soft-deleted)
+      targetUser = await User.findOne({
+        _id: id,
+        deletedAt: null
+      })
         .select('_id')
         .lean();
 
