@@ -149,7 +149,7 @@ afterAll(async () => {
 // ============================================
 describe('IDOR - Cross-Team Request Approval Attack', () => {
     let requestTeam2Id;
-    const testDate = '2026-01-25';
+    const testDate = '2026-01-26'; // Monday (not weekend - weekend approvals are blocked)
 
     beforeEach(async () => {
         await Request.deleteMany({});
