@@ -17,15 +17,19 @@ function normalizeDateKey(date) {
   // Example: "2026-01-21T18:30:00.000Z" in GMT+7 is 01:30 Jan 22, not Jan 21
   if (typeof date === 'string' && date.includes('T')) {
     const d = new Date(date);
-    return isNaN(d.getTime()) ? date.split('T')[0] : getDateKey(d);
+    if (!isNaN(d.getTime())) return getDateKey(d);
+    // Invalid ISO: try to extract YYYY-MM-DD prefix, validate format
+    const maybe = date.split('T')[0];
+    return /^\d{4}-\d{2}-\d{2}$/.test(maybe) ? maybe : '';
   }
   // If Date object - use getDateKey for proper GMT+7 conversion
   // Fix B: toISOString() returns UTC which can shift the date boundary
   if (date instanceof Date) {
     return getDateKey(date); // Uses Asia/Ho_Chi_Minh timezone
   }
-  // Fallback: try to convert
-  return String(date).split('T')[0];
+  // Fallback: return empty string to fail-safe (won't match any dateKey)
+  // Prevents garbage strings like "1234567890" or "Tue Jan 27" from being used
+  return '';
 }
 
 /**
@@ -43,13 +47,15 @@ function normalizeTimestamp(timestamp) {
 
 /**
  * Compute all attendance fields (status, lateMinutes, workMinutes, otMinutes).
- * Critical: This is called for records that EXIST. For ABSENT, caller handles it separately.
+ * Phase 3: Now called for both existing records AND synthetic empty records (for ABSENT/LEAVE detection).
+ * Priority per RULES.md §8.3: WEEKEND_OR_HOLIDAY > LEAVE > attendance-based statuses > ABSENT
  * 
  * @param {Object} attendance - { date, checkInAt, checkOutAt }
  * @param {Set<string>} holidayDates - Set of "YYYY-MM-DD" holiday dates (optional)
+ * @param {Set<string>} leaveDates - Set of "YYYY-MM-DD" approved leave dates (optional, Phase 3)
  * @returns {Object} { status, lateMinutes, workMinutes, otMinutes }
  */
-export function computeAttendance(attendance, holidayDates = new Set()) {
+export function computeAttendance(attendance, holidayDates = new Set(), leaveDates = new Set()) {
   // Fix A: Guard against null/undefined attendance to prevent destructuring crash
   if (!attendance) {
     return { status: 'UNKNOWN', lateMinutes: 0, workMinutes: 0, otMinutes: 0 };
@@ -59,15 +65,57 @@ export function computeAttendance(attendance, holidayDates = new Set()) {
 
   // Fix #2: Normalize date to "YYYY-MM-DD" format for consistent lookups
   const dateKey = normalizeDateKey(date);
-  
+
+  // P1 Guard: Empty dateKey means invalid date input - fail safely
+  // Prevents isWeekend('')/isToday('') from returning wrong results
+  if (!dateKey) {
+    return { status: 'UNKNOWN', lateMinutes: 0, workMinutes: 0, otMinutes: 0 };
+  }
+
   // Fix #1: Normalize timestamps to Date objects for consistent comparisons
   const checkIn = normalizeTimestamp(checkInAt);
   const checkOut = normalizeTimestamp(checkOutAt);
 
-  // Rule from RULES.md: "If date is Weekend/Holiday → WEEKEND/HOLIDAY"
+  // Priority 1: Weekend/Holiday - Compute metrics if attendance exists
+  // No check-in/check-out = normal holiday behavior
+  // Has check-in/check-out = Compute OT metrics (no "late" concept on weekends/holidays)
   if (isWeekend(dateKey) || holidayDates.has(dateKey)) {
+    // No attendance = normal weekend/holiday
+    if (!checkIn && !checkOut) {
+      return {
+        status: 'WEEKEND_OR_HOLIDAY',
+        lateMinutes: 0,
+        workMinutes: 0,
+        otMinutes: 0
+      };
+    }
+
+    // Has check-in/check-out = Compute OT metrics
+    let workMinutes = 0;
+    let otMinutes = 0;
+
+    if (checkIn && checkOut) {
+      // Compute work time (with lunch deduction if applicable)
+      workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut);
+      // Compute OT (minutes after 18:30)
+      otMinutes = computeOtMinutes(dateKey, checkOut);
+    }
+    // If checkIn but no checkOut (working now), keep 0 until checkout completes
+
     return {
       status: 'WEEKEND_OR_HOLIDAY',
+      lateMinutes: 0,  // Never late on weekend/holiday
+      workMinutes,
+      otMinutes
+    };
+  }
+
+  // Priority 2: LEAVE (workdays only, no attendance record)
+  // If user has approved leave and no check-in/out, status = LEAVE
+  // If attendance exists on leave day, compute normally (override scenario)
+  if (leaveDates.has(dateKey) && !checkIn && !checkOut) {
+    return {
+      status: 'LEAVE',
       lateMinutes: 0,
       workMinutes: 0,
       otMinutes: 0
@@ -86,7 +134,7 @@ export function computeAttendance(attendance, holidayDates = new Set()) {
     };
   }
 
-  // Today + checked in + not checked out = WORKING
+  // Today + checked in + not checked out = WORKING (workday only, weekend/holiday handled above)
   if (today && checkIn && !checkOut) {
     return {
       status: 'WORKING',
@@ -133,7 +181,19 @@ export function computeAttendance(attendance, holidayDates = new Set()) {
     };
   }
 
-  // Fallback (should not happen with proper data)
+  // P0 Fix: Past workday with no attendance and no leave = ABSENT
+  // This handles synthetic records for days that have passed
+  if (!today && !checkIn && !checkOut) {
+    return {
+      status: 'ABSENT',
+      lateMinutes: 0,
+      workMinutes: 0,
+      otMinutes: 0
+    };
+  }
+
+  // Fallback: Today with no attendance yet (normal state before check-in)
+  // Or unexpected data combinations
   return {
     status: 'UNKNOWN',
     lateMinutes: 0,
