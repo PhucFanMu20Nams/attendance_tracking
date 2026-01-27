@@ -1,4 +1,6 @@
 import User from '../models/User.js';
+import Attendance from '../models/Attendance.js';
+import Request from '../models/Request.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcrypt';
 
@@ -118,6 +120,15 @@ export const updateUser = async (req, res) => {
             return res.status(400).json({
                 message: 'Invalid user ID format'
             });
+        }
+
+        // Block editing soft-deleted users (P0 fix: deleted users are read-only)
+        const targetUser = await User.findById(id).select('deletedAt').lean();
+        if (!targetUser) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        if (targetUser.deletedAt != null) {
+            return res.status(400).json({ message: 'Cannot edit deleted user. Restore first.' });
         }
 
         // Whitelist allowed fields (per API_SPEC line 370)
@@ -265,11 +276,18 @@ export const resetPassword = async (req, res) => {
             });
         }
 
-        // Check if user exists
-        const existingUser = await User.findById(id).select('_id').lean();
+        // Check if user exists and is not soft-deleted
+        const existingUser = await User.findById(id).select('_id deletedAt').lean();
         if (!existingUser) {
             return res.status(404).json({
                 message: 'User not found'
+            });
+        }
+
+        // Block resetting password for soft-deleted users (P0 fix)
+        if (existingUser.deletedAt != null) {
+            return res.status(400).json({
+                message: 'Cannot reset password for deleted user. Restore first.'
             });
         }
 
@@ -468,18 +486,25 @@ export const getAllUsers = async (req, res) => {
         // Build query filter
         const filter = {};
 
-        // Soft delete filter (requires deletedAt field in User model)
+        // Soft delete filter: include legacy users without deletedAt field
+        // Per RULES.md: { deletedAt: null } alone misses docs where field doesn't exist
         if (!includeDeleted) {
-            filter.deletedAt = null;
+            filter.$and = [
+                { $or: [{ deletedAt: null }, { deletedAt: { $exists: false } }] }
+            ];
         }
 
         // Search filter (name, email, or employeeCode)
         if (search) {
-            filter.$or = [
-                { name: { $regex: search, $options: 'i' } },
-                { email: { $regex: search, $options: 'i' } },
-                { employeeCode: { $regex: search, $options: 'i' } }
-            ];
+            // Must use $and to combine with soft delete filter
+            if (!filter.$and) filter.$and = [];
+            filter.$and.push({
+                $or: [
+                    { name: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } },
+                    { employeeCode: { $regex: search, $options: 'i' } }
+                ]
+            });
         }
 
         // Count total (for pagination)
@@ -509,6 +534,212 @@ export const getAllUsers = async (req, res) => {
             console.error('getAllUsers error:', error);
         } else {
             console.error('getAllUsers error');
+        }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * DELETE /api/admin/users/:id
+ * Soft delete user (Admin only).
+ * 
+ * Behavior:
+ * - Sets deletedAt = now
+ * - Cannot delete yourself
+ * - User will be purged after SOFT_DELETE_DAYS (configurable, default 15)
+ * 
+ * Response: { message, restoreDeadline }
+ * Per API_SPEC.md#L573-L587
+ */
+export const softDeleteUser = async (req, res) => {
+    try {
+        // RBAC: ADMIN only
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const { id } = req.params;
+
+        // Validate ObjectId format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid user ID format' });
+        }
+
+        // Self-delete prevention
+        if (id === req.user._id.toString()) {
+            return res.status(400).json({ message: 'Cannot delete yourself' });
+        }
+
+        // Find user (only active users, not already deleted)
+        const user = await User.findOne({ _id: id, deletedAt: null });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found or already deleted' });
+        }
+
+        // Set deletedAt
+        const now = new Date();
+        user.deletedAt = now;
+        await user.save();
+
+        // Calculate restore deadline
+        const SOFT_DELETE_DAYS = parseInt(process.env.SOFT_DELETE_DAYS) || 15;
+        const restoreDeadline = new Date(now.getTime() + SOFT_DELETE_DAYS * 24 * 60 * 60 * 1000);
+
+        return res.status(200).json({
+            message: 'User deleted',
+            restoreDeadline: restoreDeadline.toISOString()
+        });
+    } catch (error) {
+        if (process.env.NODE_ENV !== 'production') {
+            console.error('softDeleteUser error:', error);
+        } else {
+            console.error('softDeleteUser error');
+        }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * POST /api/admin/users/:id/restore
+ * Restore soft-deleted user (Admin only).
+ * 
+ * Behavior:
+ * - Sets deletedAt = null
+ * - Only works if user is soft-deleted and not yet purged
+ * 
+ * Response: { user }
+ * Per API_SPEC.md#L589-L604
+ */
+export const restoreUser = async (req, res) => {
+    try {
+        // RBAC: ADMIN only
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const { id } = req.params;
+
+        // Validate ObjectId format
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: 'Invalid user ID format' });
+        }
+
+        // Find user (must be deleted, not purged)
+        const user = await User.findById(id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found or already purged' });
+        }
+
+        // Check if user is actually deleted
+        if (!user.deletedAt) {
+            return res.status(400).json({ message: 'User is not deleted' });
+        }
+
+        // Restore user
+        user.deletedAt = null;
+        await user.save();
+
+        // Return sanitized user
+        const sanitized = {
+            _id: user._id,
+            employeeCode: user.employeeCode,
+            name: user.name,
+            email: user.email,
+            username: user.username,
+            role: user.role,
+            teamId: user.teamId,
+            isActive: user.isActive,
+            startDate: user.startDate,
+            deletedAt: user.deletedAt,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt
+        };
+
+        return res.status(200).json({ user: sanitized });
+    } catch (error) {
+        if (process.env.NODE_ENV !== 'production') {
+            console.error('restoreUser error:', error);
+        } else {
+            console.error('restoreUser error');
+        }
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+/**
+ * POST /api/admin/users/purge
+ * Permanently delete users past retention period (Admin only).
+ * 
+ * Behavior:
+ * - Finds users where deletedAt < (now - SOFT_DELETE_DAYS)
+ * - CASCADE: Hard deletes related attendances and requests
+ * - Hard deletes the users
+ * 
+ * Response: { purged: number, cascadeDeleted: {...}, details: [...] }
+ */
+export const purgeDeletedUsers = async (req, res) => {
+    try {
+        // RBAC: ADMIN only
+        if (req.user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Access denied' });
+        }
+
+        const SOFT_DELETE_DAYS = parseInt(process.env.SOFT_DELETE_DAYS) || 15;
+        const cutoffDate = new Date(Date.now() - SOFT_DELETE_DAYS * 24 * 60 * 60 * 1000);
+
+        // Find users to purge (deletedAt is set AND older than cutoff)
+        const usersToPurge = await User.find({
+            deletedAt: {
+                $exists: true,  // Field must exist (prevent purging old users without field)
+                $ne: null,      // Must not be null
+                $lt: cutoffDate // Must be older than cutoff
+            }
+        }).select('_id employeeCode name email').lean();
+
+        if (usersToPurge.length === 0) {
+            return res.status(200).json({
+                message: 'No users to purge',
+                purged: 0,
+                details: []
+            });
+        }
+
+        const userIds = usersToPurge.map(u => u._id);
+        const details = [];
+
+        // CASCADE: Delete related attendances
+        const attendanceResult = await Attendance.deleteMany({ userId: { $in: userIds } });
+
+        // CASCADE: Delete related requests
+        const requestResult = await Request.deleteMany({ userId: { $in: userIds } });
+
+        // Delete users
+        const userResult = await User.deleteMany({ _id: { $in: userIds } });
+
+        // Build details
+        for (const user of usersToPurge) {
+            details.push({
+                userId: user._id,
+                employeeCode: user.employeeCode,
+                name: user.name,
+                email: user.email
+            });
+        }
+
+        return res.status(200).json({
+            message: `Purged ${userResult.deletedCount} users`,
+            purged: userResult.deletedCount,
+            cascadeDeleted: {
+                attendances: attendanceResult.deletedCount,
+                requests: requestResult.deletedCount
+            },
+            details
+        });
+    } catch (error) {
+        if (process.env.NODE_ENV !== 'production') {
+            console.error('purgeDeletedUsers error:', error);
+        } else {
+            console.error('purgeDeletedUsers error');
         }
         return res.status(500).json({ message: 'Internal server error' });
     }

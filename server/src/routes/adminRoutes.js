@@ -13,11 +13,22 @@ const router = express.Router();
 router.post('/users', authenticate, userController.createUser);
 router.get('/users', authenticate, userController.getAllUsers);
 
+// POST /api/admin/users/purge - Purge soft-deleted users past retention period
+// IMPORTANT: Must be BEFORE :id routes to avoid 'purge' being treated as an ID
+router.post('/users/purge', authenticate, userController.purgeDeletedUsers);
+
 // PATCH /api/admin/users/:id - Update user basic fields
 router.patch('/users/:id', authenticate, userController.updateUser);
 
 // POST /api/admin/users/:id/reset-password - Reset user password
 router.post('/users/:id/reset-password', authenticate, userController.resetPassword);
+
+// DELETE /api/admin/users/:id - Soft delete user
+router.delete('/users/:id', authenticate, userController.softDeleteUser);
+
+// POST /api/admin/users/:id/restore - Restore soft-deleted user
+router.post('/users/:id/restore', authenticate, userController.restoreUser);
+
 
 // Holiday Management (ADMIN only)
 // Per API_SPEC.md#L402-L412
