@@ -151,18 +151,19 @@ describe('Holiday Integration - Edge Cases', () => {
     });
 
     it('6. Holiday on last day of month (boundary)', async () => {
-        await Holiday.create({ date: '2026-01-31', name: 'EOM Holiday' });
+        // Use past month to avoid P1 fix that stops at today for current month
+        await Holiday.create({ date: '2025-12-31', name: 'EOM Holiday' });
         await Attendance.create({
-            userId: employeeId, date: '2026-01-31',
-            checkInAt: new Date('2026-01-31T08:30:00+07:00'),
-            checkOutAt: new Date('2026-01-31T17:30:00+07:00')
+            userId: employeeId, date: '2025-12-31',
+            checkInAt: new Date('2025-12-31T08:30:00+07:00'),
+            checkOutAt: new Date('2025-12-31T17:30:00+07:00')
         });
 
         const res = await request(app)
-            .get(`/api/attendance/me?month=${TEST_MONTH}`)
+            .get('/api/attendance/me?month=2025-12')
             .set('Authorization', `Bearer ${employeeToken}`);
 
-        const record = res.body.items.find(i => i.date === '2026-01-31');
+        const record = res.body.items.find(i => i.date === '2025-12-31');
         expect(record.status).toBe('WEEKEND_OR_HOLIDAY');
     });
 
@@ -198,7 +199,8 @@ describe('Holiday Integration - Edge Cases', () => {
         expect(record.lateMinutes).toBe(0);
     });
 
-    it('9. No attendance + holiday → no record in items', async () => {
+    it('9. No attendance + holiday → synthetic record with WEEKEND_OR_HOLIDAY status', async () => {
+        // Phase 3: getMonthlyHistory generates ALL days, so record exists even without attendance
         await Holiday.create({ date: WORKDAY_HOLIDAY, name: 'Test' });
         // No attendance created
 
@@ -208,7 +210,11 @@ describe('Holiday Integration - Edge Cases', () => {
 
         expect(res.status).toBe(200);
         const record = res.body.items.find(i => i.date === WORKDAY_HOLIDAY);
-        expect(record).toBeUndefined();
+        // Phase 3: Synthetic record exists with WEEKEND_OR_HOLIDAY status
+        expect(record).toBeDefined();
+        expect(record.status).toBe('WEEKEND_OR_HOLIDAY');
+        expect(record.checkInAt).toBeNull();
+        expect(record.checkOutAt).toBeNull();
     });
 
     it('10. Leap year Feb 29 as holiday', async () => {
