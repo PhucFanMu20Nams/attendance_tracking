@@ -601,3 +601,28 @@ Response:
 Errors:
 - 404 if user not found or already purged
 - 400 if user not deleted
+
+## POST /admin/users/purge
+Roles: ADMIN
+
+Behavior:
+- Finds users where deletedAt < (now - SOFT_DELETE_DAYS)
+- CASCADE: Hard deletes related attendances and requests
+- Hard deletes the users
+- Manual trigger (no cron job)
+
+Response:
+{
+  "message": "Purged 3 users",
+  "purged": 3,
+  "cascadeDeleted": {
+    "attendances": 45,
+    "requests": 12
+  },
+  "details": [
+    { "userId": "...", "employeeCode": "NV001", "name": "...", "email": "..." }
+  ]
+}
+
+Errors:
+- 403 if not ADMIN
