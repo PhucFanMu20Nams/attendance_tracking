@@ -32,9 +32,10 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
     }
 
     // Query users based on scope
+    const baseQuery = { isActive: true, deletedAt: null };
     const userQuery = scope === 'team'
-        ? { teamId, isActive: true }
-        : { isActive: true };
+        ? { ...baseQuery, teamId }
+        : baseQuery;
 
     const users = await User.find(userQuery)
         .select('_id name employeeCode')
@@ -46,10 +47,16 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
     }
 
     // Query attendance records for the month
+    // P0 fix: Calculate daysInMonth to handle Feb (28/29) and 30-day months correctly
+    const [year, monthNum] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+    const monthStart = `${month}-01`;
+    const monthEnd = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+
     const userIds = users.map(u => u._id);
     const attendanceRecords = await Attendance.find({
         userId: { $in: userIds },
-        date: { $gte: `${month}-01`, $lte: `${month}-31` }
+        date: { $gte: monthStart, $lte: monthEnd }
     })
         .select('userId date checkInAt checkOutAt otApproved')
         .lean();
@@ -101,7 +108,8 @@ function computeUserMonthlySummary(records, holidayDates) {
                 checkInAt: record.checkInAt,
                 checkOutAt: record.checkOutAt
             },
-            holidayDates
+            holidayDates,
+            new Set()  // Phase 3: Pass empty leaveDates (aggregates don't count leave days)
         );
 
         totalWorkMinutes += computed.workMinutes || 0;

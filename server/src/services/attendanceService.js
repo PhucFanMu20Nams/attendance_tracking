@@ -19,8 +19,8 @@ export const checkIn = async (userId) => {
     // Atomic upsert with condition: only set checkInAt if it's null
     // This prevents race condition - if checkInAt has value, update fails and returns null
     const attendance = await Attendance.findOneAndUpdate(
-      { 
-        userId, 
+      {
+        userId,
         date: dateKey,
         checkInAt: null // Only proceed if checkInAt is null (or missing)
       },
@@ -101,13 +101,13 @@ export const checkOut = async (userId) => {
   // Query to determine the exact error (only on failure path)
   if (!attendance) {
     const existing = await Attendance.findOne({ userId, date: dateKey });
-    
+
     if (!existing || !existing.checkInAt) {
       const error = new Error('Must check in first');
       error.statusCode = 400;
       throw error;
     }
-    
+
     // If we get here, it means checkOutAt already has a value
     const error = new Error('Already checked out');
     error.statusCode = 400;
@@ -124,33 +124,65 @@ export const checkOut = async (userId) => {
 
 /**
  * Get monthly attendance history for a user with computed fields.
- * Returns all attendance records for the specified month with status, minutes calculated.
+ * Returns ALL days in the month (1-31) with status computed for each day.
+ * Phase 3: Generates full month to show LEAVE/ABSENT for days without attendance records.
  * 
  * @param {string} userId - User's ObjectId
  * @param {string} month - "YYYY-MM" format (e.g., "2026-01")
  * @param {Set<string>} holidayDates - Set of holiday dateKeys (optional)
- * @returns {Promise<Array>} Array of attendance records with computed fields
+ * @param {Set<string>} leaveDates - Set of approved leave dateKeys (optional, Phase 3)
+ * @returns {Promise<Array>} Array of ALL days in month with computed fields
  */
-export const getMonthlyHistory = async (userId, month, holidayDates = new Set()) => {
+export const getMonthlyHistory = async (userId, month, holidayDates = new Set(), leaveDates = new Set()) => {
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     const error = new Error('Invalid month format. Expected YYYY-MM');
     error.statusCode = 400;
     throw error;
   }
 
+  // Generate all days in month (1-31 or fewer for shorter months)
+  const [year, monthNum] = month.split('-').map(Number);
+  const daysInMonth = new Date(year, monthNum, 0).getDate();
+
+  // P1 Fix: Don't generate future dates in current month (RULES.md §3.2: future → status null)
+  // Only show days up to today to avoid showing ABSENT for future dates
+  const todayKey = getTodayDateKey();
+  const isCurrentMonth = todayKey.startsWith(month);
+  const endDay = isCurrentMonth
+    ? Math.min(Number(todayKey.slice(8, 10)), daysInMonth)
+    : daysInMonth;
+
+  const allDates = Array.from({ length: endDay }, (_, i) =>
+    `${month}-${String(i + 1).padStart(2, '0')}`
+  );
+
+  // Fetch existing attendance records for the month
   const records = await Attendance.find({
     userId,
     date: { $regex: `^${month}` }
-  }).sort({ date: 1 });
+  }).lean();
 
-  return records.map(record => {
+  // Build attendance lookup map for O(1) access
+  const attendanceMap = new Map(records.map(r => [r.date, r]));
+
+  // Process ALL days in month (including days without attendance records)
+  return allDates.map(dateKey => {
+    // Get existing record or create synthetic empty record
+    const record = attendanceMap.get(dateKey) || {
+      date: dateKey,
+      checkInAt: null,
+      checkOutAt: null
+    };
+
+    // Compute status for this day (handles LEAVE, ABSENT, WEEKEND_OR_HOLIDAY, etc.)
     const computed = computeAttendance(
       {
         date: record.date,
         checkInAt: record.checkInAt,
         checkOutAt: record.checkOutAt
       },
-      holidayDates
+      holidayDates,
+      leaveDates
     );
 
     return {
@@ -260,7 +292,8 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
     else {
       const computed = computeAttendance(
         { date: todayKey, checkInAt: attendance.checkInAt, checkOutAt: attendance.checkOutAt },
-        holidayDates
+        holidayDates,
+        new Set()  // Phase 3: Pass empty leaveDates (today view doesn't show LEAVE)
       );
       status = computed.status;
       lateMinutes = computed.lateMinutes;
