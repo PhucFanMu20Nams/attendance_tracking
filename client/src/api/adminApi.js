@@ -85,3 +85,32 @@ export const createUser = (data) =>
  */
 export const getAdminUsers = (params, config) =>
     client.get('/admin/users', { ...config, params });
+
+// ============================================
+// SOFT DELETE & RESTORE
+// ============================================
+/**
+ * Soft delete a user (sets deletedAt).
+ * Roles: ADMIN only
+ * @param {string} userId - User ID to delete
+ * @returns {Promise} { message, restoreDeadline }
+ */
+export const softDeleteUser = (userId) =>
+    client.delete(`/admin/users/${userId}`);
+
+/**
+ * Restore a soft-deleted user.
+ * Roles: ADMIN only
+ * @param {string} userId - User ID to restore
+ * @returns {Promise} { user }
+ */
+export const restoreUser = (userId) =>
+    client.post(`/admin/users/${userId}/restore`);
+
+/**
+ * Purge all users past retention period.
+ * Roles: ADMIN only
+ * @returns {Promise} { purged, cascadeDeleted, details }
+ */
+export const purgeDeletedUsers = () =>
+    client.post('/admin/users/purge');
