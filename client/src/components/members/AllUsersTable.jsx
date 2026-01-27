@@ -1,5 +1,5 @@
 import { Table, Button, Pagination } from 'flowbite-react';
-import { HiEye, HiPencil, HiKey } from 'react-icons/hi';
+import { HiEye, HiPencil, HiKey, HiTrash, HiReply } from 'react-icons/hi';
 
 /**
  * Paginated table displaying all users.
@@ -29,7 +29,9 @@ export default function AllUsersTable({
     onPageChange,
     onViewDetail,
     onEdit,
-    onResetPassword
+    onResetPassword,
+    onDelete,
+    onRestore
 }) {
     // Filter valid users upfront to avoid sparse array with nulls
     const validUsers = (users || []).filter(u => u?._id);
@@ -65,7 +67,10 @@ export default function AllUsersTable({
                             </Table.Row>
                         ) : (
                             validUsers.map((user) => (
-                                <Table.Row key={user._id} className="bg-white">
+                                <Table.Row 
+                                    key={user._id} 
+                                    className={user.deletedAt ? 'bg-red-50 opacity-60' : 'bg-white'}
+                                >
                                     {/* Employee Code with nowrap */}
                                     <Table.Cell className="whitespace-nowrap font-medium text-gray-900">
                                         {user.employeeCode || '—'}
@@ -109,24 +114,51 @@ export default function AllUsersTable({
                                             >
                                                 <HiEye className="h-4 w-4" />
                                             </Button>
-                                            <Button
-                                                size="xs"
-                                                color="light"
-                                                onClick={() => onEdit?.(user)}
-                                                title="Edit User"
-                                                aria-label="Edit user"
-                                            >
-                                                <HiPencil className="h-4 w-4" />
-                                            </Button>
-                                            <Button
-                                                size="xs"
-                                                color="light"
-                                                onClick={() => onResetPassword?.(user)}
-                                                title="Reset Password"
-                                                aria-label="Reset user password"
-                                            >
-                                                <HiKey className="h-4 w-4" />
-                                            </Button>
+                                            {/* P0 FIX: Hide Edit/Reset for deleted users (read-only) */}
+                                            {!user.deletedAt && (
+                                                <>
+                                                    <Button
+                                                        size="xs"
+                                                        color="light"
+                                                        onClick={() => onEdit?.(user)}
+                                                        title="Edit User"
+                                                        aria-label="Edit user"
+                                                    >
+                                                        <HiPencil className="h-4 w-4" />
+                                                    </Button>
+                                                    <Button
+                                                        size="xs"
+                                                        color="light"
+                                                        onClick={() => onResetPassword?.(user)}
+                                                        title="Reset Password"
+                                                        aria-label="Reset user password"
+                                                    >
+                                                        <HiKey className="h-4 w-4" />
+                                                    </Button>
+                                                </>
+                                            )}
+                                            {/* Delete or Restore button based on deletedAt */}
+                                            {user.deletedAt ? (
+                                                <Button
+                                                    size="xs"
+                                                    color="success"
+                                                    onClick={() => onRestore?.(user._id, user.name)}
+                                                    title="Restore User"
+                                                    aria-label="Restore user"
+                                                >
+                                                    <HiReply className="h-4 w-4" />
+                                                </Button>
+                                            ) : (
+                                                <Button
+                                                    size="xs"
+                                                    color="failure"
+                                                    onClick={() => onDelete?.(user._id, user.name)}
+                                                    title="Delete User"
+                                                    aria-label="Delete user"
+                                                >
+                                                    <HiTrash className="h-4 w-4" />
+                                                </Button>
+                                            )}
                                         </div>
                                     </Table.Cell>
                                 </Table.Row>

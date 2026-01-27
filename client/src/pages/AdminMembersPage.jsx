@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Button, Alert, Spinner } from 'flowbite-react';
-import { HiRefresh, HiPlus } from 'react-icons/hi';
+import { HiRefresh, HiPlus, HiTrash, HiReply } from 'react-icons/hi';
 import { useNavigate } from 'react-router-dom';
 
 // API
 import { getTeams, getTodayAttendance, updateUser, resetPassword } from '../api/memberApi';
-import { getAdminUsers } from '../api/adminApi';
+import { getAdminUsers, softDeleteUser, restoreUser, purgeDeletedUsers } from '../api/adminApi';
 
 // Hooks
 import { usePagination } from '../hooks/usePagination';
@@ -63,6 +63,8 @@ export default function AdminMembersPage() {
     const [editUser, setEditUser] = useState(null);
     const [resetUser, setResetUser] = useState(null);
     const [createModal, setCreateModal] = useState(false);
+    const [includeDeleted, setIncludeDeleted] = useState(false);
+    const [actionLoading, setActionLoading] = useState(null); // P0 FIX: Track userId being acted on
 
     // ═══════════════════════════════════════════════════════════════════════
     // CUSTOM HOOKS
@@ -104,13 +106,14 @@ export default function AdminMembersPage() {
     } = usePagination({
         // P1 FIX: Signal signature - hook passes raw signal, not { signal }
         fetchFn: async (params, signal) => {
-            const res = await getAdminUsers(params, { signal });
+            const res = await getAdminUsers({ ...params, includeDeleted: includeDeleted || undefined }, { signal });
             return { 
                 items: res.data.items ?? [], // P4 FIX: Null-safety consistent with Today Activity
                 pagination: res.data.pagination 
             };
         },
-        enabled: viewMode === 'all'
+        enabled: viewMode === 'all',
+        extraParams: { includeDeleted }  // Re-fetch when includeDeleted changes
     });
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -197,6 +200,64 @@ export default function AdminMembersPage() {
     };
 
     // ═══════════════════════════════════════════════════════════════════════
+    // SOFT DELETE HANDLERS
+    // ═══════════════════════════════════════════════════════════════════════
+    const handleSoftDelete = async (userId, userName) => {
+        if (actionLoading) return; // P0 FIX: Prevent double-click
+        if (!window.confirm(`Xóa nhân viên "${userName}"? Có thể khôi phục trong 15 ngày.`)) return;
+        
+        setActionLoading(userId);
+        try {
+            const res = await softDeleteUser(userId);
+            const deadline = res.data.restoreDeadline 
+                ? new Date(res.data.restoreDeadline).toLocaleDateString('vi-VN')
+                : '15 ngày';
+            showToast(`Đã xóa. Khôi phục trước: ${deadline}`, 'success');
+            refetchAllUsers();
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Xóa thất bại', 'failure');
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const handleRestore = async (userId, userName) => {
+        if (actionLoading) return; // P0 FIX: Prevent double-click
+        
+        setActionLoading(userId);
+        try {
+            await restoreUser(userId);
+            showToast(`Đã khôi phục "${userName}"`, 'success');
+            refetchAllUsers();
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Khôi phục thất bại', 'failure');
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    const handlePurge = async () => {
+        if (actionLoading) return; // P0 FIX: Prevent double-click
+        if (!window.confirm('Xóa vĩnh viễn tất cả users đã xóa quá hạn? Không thể hoàn tác!')) return;
+        
+        setActionLoading('purge');
+        try {
+            const res = await purgeDeletedUsers();
+            if (res.data.purged === 0) {
+                showToast('Không có user nào cần xóa vĩnh viễn', 'info');
+            } else {
+                showToast(`Đã xóa vĩnh viễn ${res.data.purged} users`, 'success');
+                setPage(1); // P0 FIX: Reset page after purge to avoid empty results
+            }
+            refetchAllUsers();
+        } catch (err) {
+            showToast(err.response?.data?.message || 'Purge thất bại', 'failure');
+        } finally {
+            setActionLoading(null);
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
     // DERIVED VALUES
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -256,11 +317,37 @@ export default function AdminMembersPage() {
             )}
 
             {viewMode === 'all' && (
-                <MemberSearchBar
-                    value={search}
-                    onChange={setSearch}
-                    totalCount={pagination?.total ?? 0}
-                />
+                <div className="mb-4 space-y-3">
+                    <MemberSearchBar
+                        value={search}
+                        onChange={setSearch}
+                        totalCount={pagination?.total ?? 0}
+                    />
+                    
+                    {/* Include Deleted Toggle + Purge Button */}
+                    <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                id="includeDeleted"
+                                type="checkbox"
+                                checked={includeDeleted}
+                                onChange={(e) => {
+                                    setIncludeDeleted(e.target.checked);
+                                    setPage(1); // P0 FIX: Reset page when toggling to avoid empty results
+                                }}
+                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-600">Hiển thị đã xóa</span>
+                        </label>
+                        
+                        {includeDeleted && (
+                            <Button color="failure" size="xs" onClick={handlePurge}>
+                                <HiTrash className="mr-1 h-4 w-4" />
+                                Xóa vĩnh viễn
+                            </Button>
+                        )}
+                    </div>
+                </div>
             )}
 
             {/* Error Alert */}
@@ -305,6 +392,8 @@ export default function AdminMembersPage() {
                     onViewDetail={handleViewDetail}
                     onEdit={setEditUser}
                     onResetPassword={setResetUser}
+                    onDelete={handleSoftDelete}
+                    onRestore={handleRestore}
                 />
             )}
 
