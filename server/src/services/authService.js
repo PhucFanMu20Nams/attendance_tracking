@@ -16,7 +16,8 @@ export const loginUser = async (identifier, password) => {
     $or: [
       { email: normalizedIdentifier },
       { username: normalizedIdentifier }
-    ]
+    ],
+    deletedAt: null  // Block soft-deleted users from login
   });
 
   // SECURITY: Same error message prevents user enumeration attacks

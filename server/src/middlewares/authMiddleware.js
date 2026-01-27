@@ -26,6 +26,11 @@ export const authenticate = async (req, res, next) => {
       return res.status(401).json({ message: 'User not found' });
     }
 
+    // Block soft-deleted users (treat as not found for security)
+    if (user.deletedAt != null) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
     if (!user.isActive) {
       return res.status(403).json({ message: 'Account is deactivated' });
     }
