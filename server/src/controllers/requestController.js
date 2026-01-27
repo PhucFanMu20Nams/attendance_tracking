@@ -3,32 +3,83 @@ import { parsePaginationParams, clampPage, buildPaginatedResponse } from '../uti
 
 /**
  * POST /api/requests
- * Create a new attendance adjustment request
+ * Create a new attendance adjustment request (ADJUST_TIME or LEAVE)
+ * 
+ * Body (ADJUST_TIME):
+ * - type: "ADJUST_TIME" (default)
+ * - date: "YYYY-MM-DD" (required)
+ * - requestedCheckInAt: ISO string (optional)
+ * - requestedCheckOutAt: ISO string (optional)
+ * - reason: string (required)
+ * 
+ * Body (LEAVE):
+ * - type: "LEAVE"
+ * - leaveStartDate: "YYYY-MM-DD" (required)
+ * - leaveEndDate: "YYYY-MM-DD" (required)
+ * - leaveType: "ANNUAL" | "SICK" | "UNPAID" (optional)
+ * - reason: string (required)
  */
 export const createRequest = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { date, requestedCheckInAt, requestedCheckOutAt, reason } = req.body;
+    const { 
+      type = 'ADJUST_TIME',  // Default for backwards compatibility
+      date, 
+      requestedCheckInAt, 
+      requestedCheckOutAt,
+      leaveStartDate,
+      leaveEndDate,
+      leaveType,
+      reason 
+    } = req.body;
 
-    if (!date || typeof date !== 'string') {
-      return res.status(400).json({ message: 'Date is required' });
+    // Validate type enum (fail-fast)
+    if (type && !['ADJUST_TIME', 'LEAVE'].includes(type)) {
+      return res.status(400).json({ 
+        message: 'Invalid request type. Must be ADJUST_TIME or LEAVE' 
+      });
     }
 
+    // Validate reason (common for both types)
     if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
       return res.status(400).json({ message: 'Reason is required' });
     }
 
-    const request = await requestService.createRequest(
-      userId,
-      date,
-      requestedCheckInAt || null,
-      requestedCheckOutAt || null,
-      reason
-    );
+    let request;
+    
+    if (type === 'LEAVE') {
+      // Validate LEAVE-specific fields
+      if (!leaveStartDate || !leaveEndDate) {
+        return res.status(400).json({ 
+          message: 'leaveStartDate and leaveEndDate are required for LEAVE requests' 
+        });
+      }
+      
+      request = await requestService.createLeaveRequest(
+        userId, 
+        leaveStartDate, 
+        leaveEndDate, 
+        leaveType || null, 
+        reason
+      );
+    } else {
+      // Validate ADJUST_TIME-specific fields
+      if (!date || typeof date !== 'string') {
+        return res.status(400).json({ 
+          message: 'date is required for ADJUST_TIME requests' 
+        });
+      }
+      
+      request = await requestService.createRequest(
+        userId,
+        date,
+        requestedCheckInAt || null,
+        requestedCheckOutAt || null,
+        reason
+      );
+    }
 
-    return res.status(201).json({
-      request
-    });
+    return res.status(201).json({ request });
   } catch (error) {
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
@@ -48,8 +99,13 @@ export const getMyRequests = async (req, res) => {
     // Step 1: Parse pagination params (no skip yet - skip depends on total)
     const { page, limit } = parsePaginationParams(req.query);
 
-    // Optional status filter from query
-    const status = req.query.status || null;
+    // Optional status filter from query (normalize and validate)
+    const status = req.query.status?.trim().toUpperCase() || null;
+    if (status && !['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ 
+        message: 'Invalid status. Must be PENDING, APPROVED, or REJECTED' 
+      });
+    }
 
     // Step 2: Get total count ONLY (optimized - 1 DB call instead of querying items)
     const total = await requestService.countMyRequests(userId, { status });

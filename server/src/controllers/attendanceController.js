@@ -79,7 +79,11 @@ export const getMyAttendance = async (req, res) => {
     // Fetch holidays from database for this month
     const holidayDates = await getHolidayDatesForMonth(month);
 
-    const items = await attendanceService.getMonthlyHistory(userId, month, holidayDates);
+    // Phase 3: Fetch approved leave dates for this user in this month
+    const { getApprovedLeaveDates } = await import('../services/requestService.js');
+    const leaveDates = await getApprovedLeaveDates(userId, month);
+
+    const items = await attendanceService.getMonthlyHistory(userId, month, holidayDates, leaveDates);
 
     return res.status(200).json({
       items

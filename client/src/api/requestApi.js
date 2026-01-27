@@ -31,13 +31,25 @@ export const getMyRequests = (params = {}, config = {}) =>
     client.get('/requests/me', { ...config, params });
 
 /**
- * Create a new attendance adjustment request.
+ * Create a new attendance adjustment or leave request.
  * Roles: EMPLOYEE, MANAGER, ADMIN
+ * 
  * @param {Object} payload - Request data
- * @param {string} payload.date - Date in YYYY-MM-DD format (GMT+7)
+ * @param {string} [payload.type='ADJUST_TIME'] - Request type (ADJUST_TIME | LEAVE)
+ * 
+ * // ADJUST_TIME fields:
+ * @param {string} [payload.date] - Date in YYYY-MM-DD format (required if type=ADJUST_TIME)
  * @param {string} [payload.requestedCheckInAt] - ISO timestamp for check-in (optional)
  * @param {string} [payload.requestedCheckOutAt] - ISO timestamp for check-out (optional)
- * @param {string} payload.reason - Reason for adjustment (required, max 1000 chars)
+ * 
+ * // LEAVE fields:
+ * @param {string} [payload.leaveStartDate] - Start date YYYY-MM-DD (required if type=LEAVE)
+ * @param {string} [payload.leaveEndDate] - End date YYYY-MM-DD (required if type=LEAVE)
+ * @param {string} [payload.leaveType] - Leave type (ANNUAL | SICK | UNPAID, optional)
+ * 
+ * // Common:
+ * @param {string} payload.reason - Reason for request (required, max 1000 chars)
+ * 
  * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
  * @returns {Promise} { request: Object }
  */
