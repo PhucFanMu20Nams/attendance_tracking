@@ -118,14 +118,18 @@ export function getDateRange(startDate, endDate) {
   if (testStart.getUTCFullYear() !== startYear ||
     testStart.getUTCMonth() !== startMonth - 1 ||
     testStart.getUTCDate() !== startDay) {
-    throw new Error(`Invalid calendar date: ${startDate} (does not exist in calendar)`);
+    const error = new Error(`Invalid calendar date: ${startDate} (does not exist in calendar)`);
+    error.statusCode = 400;
+    throw error;
   }
 
   const testEnd = new Date(Date.UTC(endYear, endMonth - 1, endDay, 12, 0, 0));
   if (testEnd.getUTCFullYear() !== endYear ||
     testEnd.getUTCMonth() !== endMonth - 1 ||
     testEnd.getUTCDate() !== endDay) {
-    throw new Error(`Invalid calendar date: ${endDate} (does not exist in calendar)`);
+    const error = new Error(`Invalid calendar date: ${endDate} (does not exist in calendar)`);
+    error.statusCode = 400;
+    throw error;
   }
 
   // Create Date objects at noon GMT+7 to avoid timezone edge cases
