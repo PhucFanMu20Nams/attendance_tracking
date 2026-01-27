@@ -39,8 +39,8 @@ export function isWeekend(dateKey) {
   // Split dateKey and create Date in GMT+7 explicitly
   const [year, month, day] = dateKey.split('-').map(Number);
 
-  // Create date at noon GMT+7 to avoid edge cases
-  // Noon ensures we're safely in the middle of the target day regardless of DST
+  // Create date at noon GMT+7 to avoid timezone edge cases
+  // Noon ensures we're safely in the middle of the target day
   const date = new Date(Date.UTC(year, month - 1, day, 12 - 7, 0, 0));
 
   const dayOfWeek = date.getUTCDay();
@@ -83,4 +83,85 @@ export function createTimeInGMT7(dateKey, hours, minutes) {
   const dateInGMT7 = new Date(Date.UTC(year, month - 1, day, hours - 7, minutes));
 
   return dateInGMT7;
+}
+
+/**
+ * Get all dates in a range as array of "YYYY-MM-DD" strings (inclusive).
+ * Used for expanding leave date ranges.
+ * 
+ * @param {string} startDate - "YYYY-MM-DD"
+ * @param {string} endDate - "YYYY-MM-DD"
+ * @returns {string[]} Array of date strings
+ */
+export function getDateRange(startDate, endDate) {
+  // Defensive validation: ensure valid format
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    throw new Error(`Invalid startDate format: "${startDate}". Expected YYYY-MM-DD`);
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    throw new Error(`Invalid endDate format: "${endDate}". Expected YYYY-MM-DD`);
+  }
+
+  // Defensive validation: ensure logical ordering
+  if (startDate > endDate) {
+    throw new Error(`startDate (${startDate}) must be <= endDate (${endDate})`);
+  }
+
+  const dates = [];
+  const [startYear, startMonth, startDay] = startDate.split('-').map(Number);
+  const [endYear, endMonth, endDay] = endDate.split('-').map(Number);
+
+  // Defensive validation: ensure calendar validity (e.g., reject 2026-02-30)
+  // JavaScript Date auto-rolls invalid dates (Feb 30 → Mar 2), so we check if it changed
+  const testStart = new Date(Date.UTC(startYear, startMonth - 1, startDay, 12, 0, 0));
+  if (testStart.getUTCFullYear() !== startYear ||
+    testStart.getUTCMonth() !== startMonth - 1 ||
+    testStart.getUTCDate() !== startDay) {
+    throw new Error(`Invalid calendar date: ${startDate} (does not exist in calendar)`);
+  }
+
+  const testEnd = new Date(Date.UTC(endYear, endMonth - 1, endDay, 12, 0, 0));
+  if (testEnd.getUTCFullYear() !== endYear ||
+    testEnd.getUTCMonth() !== endMonth - 1 ||
+    testEnd.getUTCDate() !== endDay) {
+    throw new Error(`Invalid calendar date: ${endDate} (does not exist in calendar)`);
+  }
+
+  // Create Date objects at noon GMT+7 to avoid timezone edge cases
+  const current = new Date(Date.UTC(startYear, startMonth - 1, startDay, 12 - 7, 0, 0));
+  const end = new Date(Date.UTC(endYear, endMonth - 1, endDay, 12 - 7, 0, 0));
+
+  while (current <= end) {
+    const dateKey = getDateKey(current);
+    dates.push(dateKey);
+
+    // Move to next day
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return dates;
+}
+
+/**
+ * Count workdays between two dates (inclusive), excluding weekends and holidays.
+ * Used for calculating leaveDaysCount.
+ * 
+ * @param {string} startDate - "YYYY-MM-DD"
+ * @param {string} endDate - "YYYY-MM-DD"
+ * @param {Set<string>} holidayDates - Set of "YYYY-MM-DD" holiday dates
+ * @returns {number} Count of workdays
+ */
+export function countWorkdays(startDate, endDate, holidayDates = new Set()) {
+  const allDates = getDateRange(startDate, endDate);
+
+  let workdayCount = 0;
+  for (const dateKey of allDates) {
+    // Skip weekends and holidays
+    if (!isWeekend(dateKey) && !holidayDates.has(dateKey)) {
+      workdayCount++;
+    }
+  }
+
+  return workdayCount;
 }
