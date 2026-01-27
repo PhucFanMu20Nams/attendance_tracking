@@ -17,7 +17,7 @@ import { formatTime } from '../../utils/dateTimeFormat';
  * - Empty state when no data
  * - Accessibility (aria-labels)
  * - Safe data access (guards against null/undefined)
- * 
+ *
  * @param {Object} props
  * @param {Array} props.members - List of { user, attendance, computed }
  * @param {Object} [props.pagination] - { page, totalPages } (v2.5+)

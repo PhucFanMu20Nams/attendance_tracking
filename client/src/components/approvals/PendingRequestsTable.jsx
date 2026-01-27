@@ -1,4 +1,4 @@
-import { Table, Button, Pagination } from 'flowbite-react';
+import { Table, Button, Pagination, Badge } from 'flowbite-react';
 import { HiCheck, HiX } from 'react-icons/hi';
 
 /**
@@ -50,6 +50,8 @@ export default function PendingRequestsTable({
     const formatDate = (dateStr) => {
         if (!dateStr) return 'N/A';
         const date = new Date(dateStr + 'T00:00:00+07:00');
+        // Guard against invalid dates (e.g., "2026-02-31")
+        if (isNaN(date.getTime())) return 'N/A';
         return date.toLocaleDateString('vi-VN', {
             day: '2-digit',
             month: '2-digit',
@@ -59,7 +61,10 @@ export default function PendingRequestsTable({
 
     const formatDateTime = (isoString) => {
         if (!isoString) return 'N/A';
-        return new Date(isoString).toLocaleString('vi-VN', {
+        const date = new Date(isoString);
+        // Guard against invalid ISO strings
+        if (isNaN(date.getTime())) return 'N/A';
+        return date.toLocaleString('vi-VN', {
             timeZone: 'Asia/Ho_Chi_Minh',
             day: '2-digit',
             month: '2-digit',
@@ -69,15 +74,31 @@ export default function PendingRequestsTable({
         });
     };
 
+    const getLeaveTypeLabel = (type) => {
+        const labels = {
+            ANNUAL: 'Phép năm',
+            SICK: 'Ốm đau',
+            UNPAID: 'Không lương',
+        };
+        return labels[type] || 'Nghỉ phép';
+    };
+
+    const getTypeBadge = (type) => {
+        if (type === 'LEAVE') {
+            return <Badge color="cyan">Nghỉ phép</Badge>;
+        }
+        return <Badge color="purple">Điều chỉnh</Badge>;
+    };
+
     return (
         <>
             <div className="overflow-x-auto">
                 <Table striped>
                     <Table.Head>
                         <Table.HeadCell>Nhân viên</Table.HeadCell>
-                        <Table.HeadCell>Ngày</Table.HeadCell>
-                        <Table.HeadCell>Check-in</Table.HeadCell>
-                        <Table.HeadCell>Check-out</Table.HeadCell>
+                        <Table.HeadCell>Loại</Table.HeadCell>
+                        <Table.HeadCell>Ngày / Khoảng</Table.HeadCell>
+                        <Table.HeadCell>Chi tiết</Table.HeadCell>
                         <Table.HeadCell>Lý do</Table.HeadCell>
                         <Table.HeadCell>Tạo lúc</Table.HeadCell>
                         <Table.HeadCell>Thao tác</Table.HeadCell>
@@ -92,27 +113,64 @@ export default function PendingRequestsTable({
                         ) : (
                             safeRequests.map((req) => (
                                 <Table.Row key={req._id} className="bg-white">
+                                    {/* Employee Info */}
                                     <Table.Cell className="font-medium">
                                         <div>{req.userId?.name || 'N/A'}</div>
                                         <div className="text-xs text-gray-500">
                                             {req.userId?.employeeCode || '—'}
                                         </div>
                                     </Table.Cell>
-                                    <Table.Cell className="whitespace-nowrap">
-                                        {formatDate(req.date)}
+
+                                    {/* Type Badge */}
+                                    <Table.Cell>
+                                        {getTypeBadge(req.type)}
                                     </Table.Cell>
+
+                                    {/* Date / Range */}
                                     <Table.Cell className="whitespace-nowrap">
-                                        {formatTime(req.requestedCheckInAt)}
+                                        {req.type === 'LEAVE' ? (
+                                            <span>
+                                                {formatDate(req.leaveStartDate)} → {formatDate(req.leaveEndDate)}
+                                            </span>
+                                        ) : (
+                                            formatDate(req.date)
+                                        )}
                                     </Table.Cell>
+
+                                    {/* Details (Time or Leave Info) */}
                                     <Table.Cell className="whitespace-nowrap">
-                                        {formatTime(req.requestedCheckOutAt)}
+                                        {req.type === 'LEAVE' ? (
+                                            <div className="flex flex-col gap-1">
+                                                <Badge color="blue" size="sm">
+                                                    {getLeaveTypeLabel(req.leaveType)}
+                                                </Badge>
+                                                <span className="text-xs text-gray-600">
+                                                    {req.leaveDaysCount ?? 0} ngày làm việc
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-sm">
+                                                    Vào: {formatTime(req.requestedCheckInAt)}
+                                                </span>
+                                                <span className="text-sm">
+                                                    Ra: {formatTime(req.requestedCheckOutAt)}
+                                                </span>
+                                            </div>
+                                        )}
                                     </Table.Cell>
+
+                                    {/* Reason */}
                                     <Table.Cell className="max-w-xs truncate" title={req.reason}>
                                         {req.reason || '—'}
                                     </Table.Cell>
+
+                                    {/* Created At */}
                                     <Table.Cell className="text-sm text-gray-500 whitespace-nowrap">
                                         {formatDateTime(req.createdAt)}
                                     </Table.Cell>
+
+                                    {/* Actions */}
                                     <Table.Cell>
                                         <div className="flex gap-2">
                                             <Button

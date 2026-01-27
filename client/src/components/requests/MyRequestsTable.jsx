@@ -34,6 +34,8 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
     const formatDate = (dateStr) => {
         if (!dateStr) return 'N/A';
         const date = new Date(dateStr + 'T00:00:00+07:00');
+        // P2: Guard against invalid dates (e.g., "2026-02-31")
+        if (isNaN(date.getTime())) return 'N/A';
         return date.toLocaleDateString('vi-VN', {
             day: '2-digit',
             month: '2-digit',
@@ -63,14 +65,30 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
         return <Badge color={color}>{label}</Badge>;
     };
 
+    const getLeaveTypeLabel = (type) => {
+        const labels = {
+            ANNUAL: 'Phép năm',
+            SICK: 'Ốm đau',
+            UNPAID: 'Không lương',
+        };
+        return labels[type] || 'Nghỉ phép';
+    };
+
+    const getTypeBadge = (type) => {
+        if (type === 'LEAVE') {
+            return <Badge color="cyan">Nghỉ phép</Badge>;
+        }
+        return <Badge color="purple">Điều chỉnh</Badge>;
+    };
+
     return (
         <>
             <div className="overflow-x-auto">
                 <Table striped>
                     <Table.Head>
-                        <Table.HeadCell>Ngày</Table.HeadCell>
-                        <Table.HeadCell>Check-in</Table.HeadCell>
-                        <Table.HeadCell>Check-out</Table.HeadCell>
+                        <Table.HeadCell>Loại</Table.HeadCell>
+                        <Table.HeadCell>Ngày / Khoảng</Table.HeadCell>
+                        <Table.HeadCell>Chi tiết</Table.HeadCell>
                         <Table.HeadCell>Lý do</Table.HeadCell>
                         <Table.HeadCell>Trạng thái</Table.HeadCell>
                         <Table.HeadCell>Tạo lúc</Table.HeadCell>
@@ -85,21 +103,56 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                         ) : (
                             safeRequests.map((req) => (
                                 <Table.Row key={req._id} className="bg-white">
+                                    {/* Type Badge */}
+                                    <Table.Cell>
+                                        {getTypeBadge(req.type)}
+                                    </Table.Cell>
+
+                                    {/* Date / Range */}
                                     <Table.Cell className="font-medium whitespace-nowrap">
-                                        {formatDate(req.date)}
+                                        {req.type === 'LEAVE' ? (
+                                            <span>
+                                                {formatDate(req.leaveStartDate)} → {formatDate(req.leaveEndDate)}
+                                            </span>
+                                        ) : (
+                                            formatDate(req.date)
+                                        )}
                                     </Table.Cell>
+
+                                    {/* Details (Time or Leave Type + Days) */}
                                     <Table.Cell className="whitespace-nowrap">
-                                        {formatTime(req.requestedCheckInAt)}
+                                        {req.type === 'LEAVE' ? (
+                                            <div className="flex flex-col gap-1">
+                                                <Badge color="blue" size="sm">
+                                                    {getLeaveTypeLabel(req.leaveType)}
+                                                </Badge>
+                                                <span className="text-xs text-gray-600">
+                                                    {req.leaveDaysCount ?? 0} ngày làm việc
+                                                </span>
+                                            </div>
+                                        ) : (
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-sm">
+                                                    Vào: {formatTime(req.requestedCheckInAt)}
+                                                </span>
+                                                <span className="text-sm">
+                                                    Ra: {formatTime(req.requestedCheckOutAt)}
+                                                </span>
+                                            </div>
+                                        )}
                                     </Table.Cell>
-                                    <Table.Cell className="whitespace-nowrap">
-                                        {formatTime(req.requestedCheckOutAt)}
-                                    </Table.Cell>
+
+                                    {/* Reason */}
                                     <Table.Cell className="max-w-xs truncate" title={req.reason}>
                                         {req.reason || '—'}
                                     </Table.Cell>
+
+                                    {/* Status */}
                                     <Table.Cell>
                                         {getStatusBadge(req.status)}
                                     </Table.Cell>
+
+                                    {/* Created At */}
                                     <Table.Cell className="text-sm text-gray-500 whitespace-nowrap">
                                         {formatDateTime(req.createdAt)}
                                     </Table.Cell>
