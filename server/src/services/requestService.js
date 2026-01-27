@@ -2,7 +2,9 @@ import mongoose from 'mongoose';
 import Request from '../models/Request.js';
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
-import { getDateKey } from '../utils/dateUtils.js';
+import Holiday from '../models/Holiday.js';
+import { getDateKey, getDateRange, countWorkdays, isWeekend } from '../utils/dateUtils.js';
+import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 
 /**
  * Validate and parse a date value.
@@ -36,6 +38,13 @@ const toValidDate = (value, fieldName) => {
  * @returns {Promise<Object>} Created request
  */
 export const createRequest = async (userId, date, requestedCheckInAt, requestedCheckOutAt, reason) => {
+  // Validation 0: userId must be valid ObjectId (P1 defensive fix for consistency)
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    const error = new Error('Invalid userId');
+    error.statusCode = 400;
+    throw error;
+  }
+
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     const error = new Error('Invalid date format. Expected YYYY-MM-DD');
     error.statusCode = 400;
@@ -236,8 +245,15 @@ const buildPendingFilter = async (user) => {
       throw error;
     }
 
-    // Find all users in the same team
-    const teamMembers = await User.find({ teamId: user.teamId }).select('_id');
+    // Find all users in the same team (exclude soft-deleted users)
+    // PATCH: Use $or to handle legacy users without deletedAt field (pre-migration)
+    const teamMembers = await User.find({
+      teamId: user.teamId,
+      $or: [
+        { deletedAt: null },              // Migrated users (not deleted)
+        { deletedAt: { $exists: false } }  // Legacy users (no field yet)
+      ]
+    }).select('_id');
     const teamMemberIds = teamMembers.map(member => member._id);
 
     filter.userId = { $in: teamMemberIds };
@@ -331,22 +347,25 @@ export const approveRequest = async (requestId, approver) => {
     }
   }
 
-  // MVP: Validate timestamps are on request.date (defense-in-depth)
-  if (existingRequest.requestedCheckInAt) {
-    const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
-    if (checkInDateKey !== existingRequest.date) {
-      const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
-      error.statusCode = 400;
-      throw error;
+  // P0 Fix: Only validate timestamps for ADJUST_TIME requests (LEAVE has date=null)
+  if (existingRequest.type === 'ADJUST_TIME') {
+    // MVP: Validate timestamps are on request.date (defense-in-depth)
+    if (existingRequest.requestedCheckInAt) {
+      const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
+      if (checkInDateKey !== existingRequest.date) {
+        const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
+        error.statusCode = 400;
+        throw error;
+      }
     }
-  }
 
-  if (existingRequest.requestedCheckOutAt) {
-    const checkOutDateKey = getDateKey(new Date(existingRequest.requestedCheckOutAt));
-    if (checkOutDateKey !== existingRequest.date) {
-      const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
-      error.statusCode = 400;
-      throw error;
+    if (existingRequest.requestedCheckOutAt) {
+      const checkOutDateKey = getDateKey(new Date(existingRequest.requestedCheckOutAt));
+      if (checkOutDateKey !== existingRequest.date) {
+        const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
+        error.statusCode = 400;
+        throw error;
+      }
     }
   }
 
@@ -376,8 +395,22 @@ export const approveRequest = async (requestId, approver) => {
     throw error;
   }
 
-  // Update or create attendance for the requested date
-  await updateAttendanceFromRequest(updatedRequest);
+  // Update or create attendance ONLY for ADJUST_TIME requests
+  // LEAVE requests don't create attendance records
+  if (updatedRequest.type === 'ADJUST_TIME') {
+    // Validate: Block approve for weekend/holiday (defense-in-depth)
+    const requestDate = updatedRequest.date;
+    const month = requestDate.substring(0, 7);
+    const holidayDates = await getHolidayDatesForMonth(month);
+    
+    if (isWeekend(requestDate) || holidayDates.has(requestDate)) {
+      const error = new Error('Cannot approve time adjustment request for weekend/holiday');
+      error.statusCode = 400;
+      throw error;
+    }
+    
+    await updateAttendanceFromRequest(updatedRequest);
+  }
 
   return updatedRequest;
 };
@@ -500,3 +533,192 @@ async function updateAttendanceFromRequest(request) {
     { upsert: true, new: true }
   );
 }
+/**
+ * Create a LEAVE request.
+ * Validates:
+ * - leaveStartDate <= leaveEndDate
+ * - Max range: 30 days
+ * - No attendance exists for ANY date in range
+ * - No overlap with existing APPROVED or PENDING leave
+ * 
+ * Known Limitation (MVP): Small race condition window between findOne() and create().
+ * Two concurrent LEAVE requests could both pass overlap check and create overlapping leaves.
+ * Probability is very low; acceptable for MVP. Cannot use unique index for range overlap.
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {string} leaveStartDate - "YYYY-MM-DD"
+ * @param {string} leaveEndDate - "YYYY-MM-DD"
+ * @param {string|null} leaveType - "ANNUAL" | "SICK" | "UNPAID" | null
+ * @param {string} reason - Reason for leave
+ * @returns {Promise<Object>} Created request with leaveDaysCount
+ */
+export const createLeaveRequest = async (userId, leaveStartDate, leaveEndDate, leaveType, reason) => {
+  // Validation 0: userId must be valid ObjectId (P1 defensive fix)
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    const error = new Error('Invalid userId');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 1: Date format
+  if (!leaveStartDate || !/^\d{4}-\d{2}-\d{2}$/.test(leaveStartDate)) {
+    const error = new Error('Invalid leaveStartDate format. Expected YYYY-MM-DD');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!leaveEndDate || !/^\d{4}-\d{2}-\d{2}$/.test(leaveEndDate)) {
+    const error = new Error('Invalid leaveEndDate format. Expected YYYY-MM-DD');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 2: startDate <= endDate
+  if (leaveStartDate > leaveEndDate) {
+    const error = new Error('leaveStartDate must be before or equal to leaveEndDate');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 3: Max range 30 days
+  const allDates = getDateRange(leaveStartDate, leaveEndDate);
+  if (allDates.length > 30) {
+    const error = new Error('Leave range cannot exceed 30 days');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 4: Reason required and length limit
+  if (!reason || reason.trim().length === 0) {
+    const error = new Error('Reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const MAX_REASON_LENGTH = 1000;
+  if (reason.length > MAX_REASON_LENGTH) {
+    const error = new Error(`Reason must be ${MAX_REASON_LENGTH} characters or less`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 5: leaveType must be valid enum or null
+  if (leaveType && !['ANNUAL', 'SICK', 'UNPAID'].includes(leaveType)) {
+    const error = new Error('leaveType must be ANNUAL, SICK, or UNPAID');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 6: Check no attendance exists for any date in range
+  const existingAttendance = await Attendance.findOne({
+    userId,
+    date: { $in: allDates }
+  }).select('date').lean();
+
+  if (existingAttendance) {
+    const error = new Error(`Already checked in for ${existingAttendance.date}. Cannot request leave for dates with attendance. Use ADJUST_TIME instead.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Validation 7: Check no overlap with existing APPROVED or PENDING leave
+  // P0 Fix: Simplified overlap check covers all cases (including "new contains existing")
+  // Overlap when: existingStart <= newEnd AND existingEnd >= newStart
+  const existingLeave = await Request.findOne({
+    userId,
+    type: 'LEAVE',
+    status: { $in: ['APPROVED', 'PENDING'] },
+    leaveStartDate: { $lte: leaveEndDate },      // Existing starts before/on new end
+    leaveEndDate: { $gte: leaveStartDate }       // Existing ends after/on new start
+  }).select('leaveStartDate leaveEndDate status').lean();
+
+  if (existingLeave) {
+    const statusText = existingLeave.status === 'APPROVED' ? 'approved' : 'pending';
+    const error = new Error(`Leave overlaps with existing ${statusText} leave (${existingLeave.leaveStartDate} to ${existingLeave.leaveEndDate})`);
+    error.statusCode = 409;
+    throw error;
+  }
+
+  // Calculate workdays (exclude weekends + holidays)
+  // P1 Fix: Query holidays for exact date range (optimized from full-year query)
+  const holidays = await Holiday.find({
+    date: { $gte: leaveStartDate, $lte: leaveEndDate }
+  }).select('date -_id').lean();
+
+  const holidayDates = new Set(holidays.map(h => h.date));
+  const leaveDaysCount = countWorkdays(leaveStartDate, leaveEndDate, holidayDates);
+
+  // Create request
+  try {
+    const request = await Request.create({
+      userId,
+      type: 'LEAVE',
+      date: null, // LEAVE doesn't use date field
+      leaveStartDate,
+      leaveEndDate,
+      leaveType: leaveType || null,
+      leaveDaysCount,
+      reason: reason.trim(),
+      status: 'PENDING'
+    });
+
+    return request;
+  } catch (err) {
+    // Handle any MongoDB errors
+    throw err;
+  }
+};
+
+/**
+ * Get all approved leave dates for a user in a month.
+ * Used by controllers to pass leaveDates to computeAttendance.
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {string} monthStr - "YYYY-MM"
+ * @returns {Promise<Set<string>>} Set of "YYYY-MM-DD" dates
+ */
+export const getApprovedLeaveDates = async (userId, monthStr) => {
+  if (!monthStr || !/^\d{4}-\d{2}$/.test(monthStr)) {
+    return new Set(); // Return empty set for invalid month (defensive)
+  }
+
+  // Calculate month boundaries
+  const [year, month] = monthStr.split('-').map(Number);
+  const monthStart = `${monthStr}-01`;
+
+  // Calculate next month start (handles year boundary)
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextMonthStart = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
+
+  // Query APPROVED LEAVE requests that overlap with this month
+  const leaveRequests = await Request.find({
+    userId,
+    type: 'LEAVE',
+    status: 'APPROVED',
+    $or: [
+      // Leave starts within month
+      { leaveStartDate: { $gte: monthStart, $lt: nextMonthStart } },
+      // Leave ends within month
+      { leaveEndDate: { $gte: monthStart, $lt: nextMonthStart } },
+      // Leave spans entire month
+      { leaveStartDate: { $lt: monthStart }, leaveEndDate: { $gte: nextMonthStart } }
+    ]
+  }).select('leaveStartDate leaveEndDate').lean();
+
+  // Expand ranges to individual dates and filter to month
+  const leaveDates = new Set();
+
+  for (const leave of leaveRequests) {
+    const allDates = getDateRange(leave.leaveStartDate, leave.leaveEndDate);
+
+    for (const dateKey of allDates) {
+      // Only include dates within the requested month
+      if (dateKey >= monthStart && dateKey < nextMonthStart) {
+        leaveDates.add(dateKey);
+      }
+    }
+  }
+
+  return leaveDates;
+};
