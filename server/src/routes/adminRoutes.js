@@ -1,6 +1,7 @@
 import express from 'express';
 import * as userController from '../controllers/userController.js';
 import * as holidayController from '../controllers/holidayController.js';
+import * as attendanceController from '../controllers/attendanceController.js';
 import { authenticate } from '../middlewares/authMiddleware.js';
 
 const router = express.Router();
@@ -35,6 +36,10 @@ router.post('/users/:id/restore', authenticate, userController.restoreUser);
 router.post('/holidays', authenticate, holidayController.createHoliday);
 router.get('/holidays', authenticate, holidayController.getHolidays);
 router.post('/holidays/range', authenticate, holidayController.createHolidayRange);
+
+// Attendance Management (ADMIN only)
+// Force checkout for stale open sessions
+router.post('/attendance/:id/force-checkout', authenticate, attendanceController.forceCheckout);
 
 export default router;
 

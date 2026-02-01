@@ -5,6 +5,10 @@ import Attendance from '../models/Attendance.js';
 import Holiday from '../models/Holiday.js';
 import { getDateKey, getDateRange, countWorkdays, isWeekend } from '../utils/dateUtils.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
+import {
+  getCheckoutGraceMs, getCheckoutGraceHours,
+  getAdjustRequestMaxMs, getAdjustRequestMaxDays
+} from '../utils/graceConfig.js';
 
 /**
  * Validate and parse a date value.
@@ -24,6 +28,33 @@ const toValidDate = (value, fieldName) => {
     throw error;
   }
   return d;
+};
+
+/**
+ * Assert that a value includes timezone information if it's a string.
+ * Prevents timezone ambiguity for string inputs while allowing Date objects.
+ * 
+ * Bug #1 Fix: Only validates strings - Date objects are already timezone-aware.
+ * 
+ * @param {*} value - Value to check (string, Date, or null/undefined)
+ * @param {string} fieldName - Field name for error message
+ * @throws {Error} 400 if value is a string without timezone
+ */
+const assertHasTzIfString = (value, fieldName) => {
+  if (!value) return;
+
+  // Only validate string inputs (Date objects are already timezone-aware)
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    // Accept ISO 8601: +07:00, +0700, Z
+    if (!/(Z|[+-]\d{2}:?\d{2})$/.test(trimmed)) {
+      const error = new Error(
+        `${fieldName} must include timezone (e.g., +07:00 or Z)`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+  }
 };
 
 /**
@@ -61,15 +92,20 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     throw error;
   }
 
-  if (!reason || reason.trim().length === 0) {
+  // Validate reason (trim to prevent whitespace padding)
+  // Bug #1 Fix: Use nullish coalescing to prevent TypeError if reason is null/undefined
+  const trimmedReason = (reason ?? '').trim();
+
+  if (!trimmedReason) {
     const error = new Error('Reason is required');
     error.statusCode = 400;
     throw error;
   }
 
   // Security: Limit reason length to prevent DoS (1000 chars is enough for a detailed explanation)
+  // Issue #7 Fix: Check trimmed length for consistency
   const MAX_REASON_LENGTH = 1000;
-  if (reason.length > MAX_REASON_LENGTH) {
+  if (trimmedReason.length > MAX_REASON_LENGTH) {
     const error = new Error(`Reason must be ${MAX_REASON_LENGTH} characters or less`);
     error.statusCode = 400;
     throw error;
@@ -84,7 +120,7 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     }
   }
 
-  // MVP: No overnight shifts - timestamps must be on the same date as request.date
+  // Cross-midnight OT: Validate checkIn is on request.date
   if (checkIn) {
     const checkInDateKey = getDateKey(checkIn);
     if (checkInDateKey !== date) {
@@ -92,23 +128,95 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
       error.statusCode = 400;
       throw error;
     }
-  }
 
-  if (checkOut) {
-    const checkOutDateKey = getDateKey(checkOut);
-    if (checkOutDateKey !== date) {
-      const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
-      error.statusCode = 400;
-      throw error;
-    }
+    // Bug #1 Fix: Use helper to validate timezone only for string inputs
+    assertHasTzIfString(requestedCheckInAt, 'requestedCheckInAt');
   }
 
   // Business rule: If attendance doesn't exist for this date, checkInAt is required
   // (because Attendance.checkInAt is a required field)
   // Also validate partial requests against existing attendance data
+  // NOTE: Fetch BEFORE 2-rule validation to access checkInAt for anchor time
   const existingAttendance = await Attendance.findOne({ userId, date })
     .select('checkInAt checkOutAt')
     .lean();
+
+  // Issue #5: Block weekend/holiday requests early for better UX
+  // (Same validation as approveRequest, but fail-fast at creation)
+  const month = date.substring(0, 7);
+  const holidayDates = await getHolidayDatesForMonth(month);
+  if (isWeekend(date) || holidayDates.has(date)) {
+    const error = new Error('Cannot create time adjustment request for weekend or holiday');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Load grace config for 2-rule validation
+  const sessionGraceMs = getCheckoutGraceMs();
+  const sessionGraceHours = getCheckoutGraceHours();
+  const submitMaxMs = getAdjustRequestMaxMs();
+  const submitMaxDays = getAdjustRequestMaxDays();
+
+  // Determine anchor time for BOTH rules (checkIn reference point)
+  // Bug #2 Fix: Extract anchor outside checkOut block to validate ALL requests
+  let anchorTime = null;
+  if (checkIn) {
+    anchorTime = checkIn;
+  } else if (existingAttendance?.checkInAt) {
+    anchorTime = new Date(existingAttendance.checkInAt);
+  }
+
+  // Rule 2: Submission window (applies to ALL requests with anchor)
+  // Bug #2 Fix: Moved outside checkOut block - now validates checkIn-only requests too
+  if (anchorTime) {
+    const timeSinceCheckIn = Date.now() - anchorTime;
+    if (timeSinceCheckIn > submitMaxMs) {
+      const error = new Error(
+        `Cannot submit request >${submitMaxDays} days after check-in`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  // Rule 1: Session length validation (only applies when checkOut exists)
+  if (checkOut) {
+    // Bug #1 Fix: Use helper to validate timezone only for string inputs
+    assertHasTzIfString(requestedCheckOutAt, 'requestedCheckOutAt');
+
+    // Issue #3: Block future checkout (tolerance: 1 minute for clock skew)
+    const now = Date.now();
+    const tolerance = 60 * 1000; // 1 minute
+    if (checkOut.getTime() > now + tolerance) {
+      const error = new Error('requestedCheckOutAt cannot be in the future');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Require anchor for checkout validation
+    if (!anchorTime) {
+      const error = new Error('Cannot validate checkout without check-in reference');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Rule 1: Session length validation
+    const sessionLength = checkOut - anchorTime;
+    if (sessionLength > sessionGraceMs) {
+      const error = new Error(
+        `Session length exceeds ${sessionGraceHours}h limit`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // checkOut must be after checkIn (basic sanity check)
+    if (checkOut <= anchorTime) {
+      const error = new Error('requestedCheckOutAt must be after check-in');
+      error.statusCode = 400;
+      throw error;
+    }
+  }
 
   if (!checkIn && !existingAttendance) {
     const error = new Error('Cannot create new attendance without check-in time. Please include requestedCheckInAt');
@@ -159,7 +267,7 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
       type: 'ADJUST_TIME',
       requestedCheckInAt: checkIn,
       requestedCheckOutAt: checkOut,
-      reason: reason.trim(),
+      reason: trimmedReason,
       status: 'PENDING'
     });
 
@@ -347,9 +455,10 @@ export const approveRequest = async (requestId, approver) => {
     }
   }
 
-  // P0 Fix: Only validate timestamps for ADJUST_TIME requests (LEAVE has date=null)
+  // Step 6: Revalidate ADJUST_TIME requests with 2-rule validation (defense-in-depth)
+  // Cross-midnight OT: Replace cross-day validation with anchor-based validation
   if (existingRequest.type === 'ADJUST_TIME') {
-    // MVP: Validate timestamps are on request.date (defense-in-depth)
+    // Validate checkIn is on request.date (cross-midnight: only checkIn must match date)
     if (existingRequest.requestedCheckInAt) {
       const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
       if (checkInDateKey !== existingRequest.date) {
@@ -359,10 +468,66 @@ export const approveRequest = async (requestId, approver) => {
       }
     }
 
+    // Bug #3 Fix: Validate cross-midnight OT with 2-rule validation (defense-in-depth)
+    // Extract anchor determination to apply Rule 2 for ALL requests (checkIn-only + checkOut-only)
+
+    // Load grace config
+    const sessionGraceMs = getCheckoutGraceMs();
+    const sessionGraceHours = getCheckoutGraceHours();
+    const submitMaxMs = getAdjustRequestMaxMs();
+    const submitMaxDays = getAdjustRequestMaxDays();
+
+    // Determine anchor time (needed for both Rule 1 and Rule 2)
+    let anchorTime = null;
+    if (existingRequest.requestedCheckInAt) {
+      anchorTime = new Date(existingRequest.requestedCheckInAt);
+    } else {
+      // Fetch existing attendance to get checkIn
+      // Critical: Use _id explicitly - userId is populated User object
+      const att = await Attendance.findOne({
+        userId: existingRequest.userId._id,
+        date: existingRequest.date
+      }).select('checkInAt').lean();
+      anchorTime = att?.checkInAt ? new Date(att.checkInAt) : null;
+    }
+
+    // Bug #2 Fix: Require anchor for ALL ADJUST_TIME requests (defense-in-depth)
+    // Prevents approving corrupt requests (missing checkIn in both request and attendance)
+    if (!anchorTime) {
+      const error = new Error('Cannot approve: missing check-in reference');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Rule 2: Submission window validation (applies to ALL requests)
+    // Now runs unconditionally since anchorTime is guaranteed to exist
+    const requestCreated = new Date(existingRequest.createdAt);
+    const submissionDelay = requestCreated - anchorTime;
+    if (submissionDelay > submitMaxMs) {
+      const error = new Error(
+        `Request invalid: submitted >${submitMaxDays}d after check-in`
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Rule 1: Session length validation (only for checkOut requests)
     if (existingRequest.requestedCheckOutAt) {
-      const checkOutDateKey = getDateKey(new Date(existingRequest.requestedCheckOutAt));
-      if (checkOutDateKey !== existingRequest.date) {
-        const error = new Error('requestedCheckOutAt must be on the same date as request date (GMT+7)');
+      const checkOut = new Date(existingRequest.requestedCheckOutAt);
+
+      // Session length validation
+      const sessionLength = checkOut - anchorTime;
+      if (sessionLength > sessionGraceMs) {
+        const error = new Error(
+          `Request invalid: session exceeds ${sessionGraceHours}h limit`
+        );
+        error.statusCode = 400;
+        throw error;
+      }
+
+      // Basic sanity: checkOut must be after checkIn
+      if (checkOut <= anchorTime) {
+        const error = new Error('Request invalid: checkOut must be after check-in');
         error.statusCode = 400;
         throw error;
       }
@@ -402,13 +567,13 @@ export const approveRequest = async (requestId, approver) => {
     const requestDate = updatedRequest.date;
     const month = requestDate.substring(0, 7);
     const holidayDates = await getHolidayDatesForMonth(month);
-    
+
     if (isWeekend(requestDate) || holidayDates.has(requestDate)) {
       const error = new Error('Cannot approve time adjustment request for weekend/holiday');
       error.statusCode = 400;
       throw error;
     }
-    
+
     await updateAttendanceFromRequest(updatedRequest);
   }
 
@@ -589,14 +754,17 @@ export const createLeaveRequest = async (userId, leaveStartDate, leaveEndDate, l
   }
 
   // Validation 4: Reason required and length limit
-  if (!reason || reason.trim().length === 0) {
+  // Bug #1 Fix: Use nullish coalescing + trim for consistency
+  const trimmedReason = (reason ?? '').trim();
+
+  if (!trimmedReason) {
     const error = new Error('Reason is required');
     error.statusCode = 400;
     throw error;
   }
 
   const MAX_REASON_LENGTH = 1000;
-  if (reason.length > MAX_REASON_LENGTH) {
+  if (trimmedReason.length > MAX_REASON_LENGTH) {
     const error = new Error(`Reason must be ${MAX_REASON_LENGTH} characters or less`);
     error.statusCode = 400;
     throw error;
@@ -658,7 +826,7 @@ export const createLeaveRequest = async (userId, leaveStartDate, leaveEndDate, l
       leaveEndDate,
       leaveType: leaveType || null,
       leaveDaysCount,
-      reason: reason.trim(),
+      reason: trimmedReason,
       status: 'PENDING'
     });
 

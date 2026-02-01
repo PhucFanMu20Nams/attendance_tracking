@@ -1,51 +1,63 @@
 import Attendance from '../models/Attendance.js';
 import User from '../models/User.js';
+import AuditLog from '../models/AuditLog.js';
 import { getTodayDateKey, isWeekend } from '../utils/dateUtils.js';
 import { computeAttendance } from '../utils/attendanceCompute.js';
 import { clampPage } from '../utils/pagination.js';
+import { getCheckoutGraceMs } from '../utils/graceConfig.js';
 
 /**
  * Check-in: Create or update today's attendance with checkInAt timestamp.
- * Business rule: One check-in per day, block if already checked in.
- * Race-safe: Atomic condition + E11000 handler prevents concurrent check-ins.
+ * Cross-midnight OT: Block if ANY open session exists (not just today).
+ * Logs stale sessions (outside grace period) to AuditLog for admin review.
  * 
  * @param {string} userId - User's ObjectId
  * @returns {Promise<Object>} Attendance record
  */
 export const checkIn = async (userId) => {
   const dateKey = getTodayDateKey();
+  const graceMs = getCheckoutGraceMs();
+  const earliestAllowed = new Date(Date.now() - graceMs);
 
-  try {
-    // Atomic upsert with condition: only set checkInAt if it's null
-    // This prevents race condition - if checkInAt has value, update fails and returns null
-    const attendance = await Attendance.findOneAndUpdate(
-      {
+  // Check for ANY open session (cross-midnight OT: not limited to today)
+  // Sort by oldest first to ensure deterministic behavior if multiple sessions exist
+  const openSession = await Attendance.findOne({
+    userId,
+    checkInAt: { $exists: true, $ne: null },
+    checkOutAt: null
+  }).sort({ checkInAt: 1 }).select('date checkInAt').lean();
+
+  if (openSession) {
+    // Log if stale (outside grace period)
+    if (openSession.checkInAt < earliestAllowed) {
+      // Best-effort logging: Don't block check-in if AuditLog fails
+      AuditLog.create({
+        type: 'STALE_OPEN_SESSION',
         userId,
-        date: dateKey,
-        checkInAt: null // Only proceed if checkInAt is null (or missing)
-      },
-      {
-        $set: {
-          checkInAt: new Date()
-        },
-        $setOnInsert: {
-          userId,
-          date: dateKey
+        details: {
+          sessionDate: openSession.date,
+          checkInAt: openSession.checkInAt,
+          detectedAt: 'checkIn'
         }
-      },
-      {
-        upsert: true,
-        new: true,
-        setDefaultsOnInsert: true
-      }
-    );
-
-    // If attendance is null, it means checkInAt already has a value (condition failed)
-    if (!attendance) {
-      const error = new Error('Already checked in');
-      error.statusCode = 400;
-      throw error;
+      }).catch(() => {});
     }
+
+    // Block check-in (strict policy: must checkout first)
+    const error = new Error(
+      `You have an open session from ${openSession.date}. Please checkout first.`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Create today's attendance (rely on unique constraint for duplicate detection)
+  // Fixed: Remove meaningless `checkInAt: null` filter that never matches due to required schema
+  try {
+    const attendance = await Attendance.create({
+      userId,
+      date: dateKey,
+      checkInAt: new Date()
+    });
 
     return {
       userId: attendance.userId,
@@ -54,71 +66,106 @@ export const checkIn = async (userId) => {
       checkOutAt: attendance.checkOutAt
     };
   } catch (err) {
-    // Defense-in-depth: Handle duplicate key error from concurrent upserts
-    // This can happen if two requests hit the upsert at exactly the same time
-    // before either document exists (rare but possible race window)
+    // Unique constraint violation: user already checked in today
     if (err?.code === 11000) {
       const error = new Error('Already checked in');
       error.statusCode = 400;
       throw error;
     }
-    // Re-throw other errors (network, validation, etc.)
     throw err;
   }
 };
 
+
 /**
- * Check-out: Update today's attendance with checkOutAt timestamp.
- * Business rule: Must check-in first, block if already checked out.
- * Race-safe: Atomic condition prevents concurrent check-outs.
+ * Check-out: Update attendance with checkOutAt timestamp.
+ * Cross-midnight OT: Supports checkout of sessions from previous days (within grace period).
+ * Business rules:
+ * - Must check-in first
+ * - Session must be within grace period (default 24h)
+ * - If ANY stale session exists, log and block (prevents stuck state)
+ * - Multiple open sessions are logged to AuditLog
+ * - Most recent non-stale session is checked out
  * 
  * @param {string} userId - User's ObjectId
  * @returns {Promise<Object>} Attendance record
  */
 export const checkOut = async (userId) => {
-  const dateKey = getTodayDateKey();
+  const graceMs = getCheckoutGraceMs();
+  const earliestAllowed = new Date(Date.now() - graceMs);
 
-  // Atomic update with condition: only set checkOutAt if checkInAt exists and checkOutAt is null
-  // This prevents race condition - concurrent requests will only succeed once
-  const attendance = await Attendance.findOneAndUpdate(
-    {
+  // Load ALL open sessions (no grace filter) - single query
+  // Sort by newest first to checkout most recent
+  // Defense: Limit to 200 sessions to prevent OOM if data corruption occurs
+  const openSessions = await Attendance.find({
+    userId,
+    checkInAt: { $exists: true, $ne: null },
+    checkOutAt: null
+  }).select('_id date checkInAt').sort({ checkInAt: -1 }).limit(200).lean();
+
+  // No open sessions at all
+  if (openSessions.length === 0) {
+    const error = new Error('Must check in first');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Log if multiple open sessions exist (data anomaly)
+  // Count ALL open sessions (not just active)
+  if (openSessions.length > 1) {
+    // Best-effort logging: Don't block checkout if AuditLog fails
+    AuditLog.create({
+      type: 'MULTIPLE_ACTIVE_SESSIONS',
       userId,
-      date: dateKey,
-      checkInAt: { $ne: null }, // checkInAt must have a value (not null)
-      checkOutAt: null // checkOutAt must be null (not yet checked out)
-    },
-    {
-      $set: {
-        checkOutAt: new Date()
+      details: {
+        sessionCount: openSessions.length,
+        sessions: openSessions.slice(0, 100) // Cap to prevent bloat
       }
-    },
-    {
-      new: true
-    }
+    }).catch(() => {});
+  }
+
+  // Check if ANY stale session exists
+  // Policy: Block checkout if stale exists to prevent stuck state
+  const staleSession = openSessions.find(s => s.checkInAt < earliestAllowed);
+  if (staleSession) {
+    // Best-effort logging: Don't block checkout if AuditLog fails
+    AuditLog.create({
+      type: 'STALE_OPEN_SESSION',
+      userId,
+      details: {
+        sessionDate: staleSession.date,
+        checkInAt: staleSession.checkInAt,
+        detectedAt: 'checkOut'
+      }
+    }).catch(() => {});
+
+    const error = new Error(
+      `Session from ${staleSession.date} expired. Contact admin.`
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Checkout most recent session (atomic update by _id)
+  const targetSession = openSessions[0]; // Already sorted newest first
+  const updated = await Attendance.findOneAndUpdate(
+    { _id: targetSession._id, checkOutAt: null },
+    { $set: { checkOutAt: new Date() } },
+    { new: true, runValidators: true }
   );
 
-  // If attendance is null, either no check-in or already checked out
-  // Query to determine the exact error (only on failure path)
-  if (!attendance) {
-    const existing = await Attendance.findOne({ userId, date: dateKey });
-
-    if (!existing || !existing.checkInAt) {
-      const error = new Error('Must check in first');
-      error.statusCode = 400;
-      throw error;
-    }
-
-    // If we get here, it means checkOutAt already has a value
+  // Race condition: someone else checked out this session
+  if (!updated) {
     const error = new Error('Already checked out');
     error.statusCode = 400;
     throw error;
   }
 
   return {
-    userId: attendance.userId,
-    date: attendance.date,
-    checkInAt: attendance.checkInAt,
-    checkOutAt: attendance.checkOutAt
+    userId: updated.userId,
+    date: updated.date,
+    checkInAt: updated.checkInAt,
+    checkOutAt: updated.checkOutAt
   };
 };
 
@@ -225,7 +272,14 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
   }
 
   // Step 1: Build user query based on scope (active + soft delete filter)
-  const userQuery = { isActive: true, deletedAt: null };
+  // Use $or to handle legacy users without deletedAt field (consistent with requestService)
+  const userQuery = {
+    isActive: true,
+    $or: [
+      { deletedAt: null },
+      { deletedAt: { $exists: false } }
+    ]
+  };
   if (scope === 'team') {
     if (!teamId) {
       const error = new Error('Team ID is required for team scope');
