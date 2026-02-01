@@ -17,6 +17,7 @@ import Team from '../src/models/Team.js';
 import Attendance from '../src/models/Attendance.js';
 import Request from '../src/models/Request.js';
 import bcrypt from 'bcrypt';
+import { getDateKey } from '../src/utils/dateUtils.js';
 
 let adminToken, managerToken, employeeToken, managerNoTeamToken;
 let teamId, team2Id, employeeId, employee2Id;
@@ -277,15 +278,16 @@ describe('Equivalence Partitioning - RBAC for Reports', () => {
 // DECISION TABLE - Request Validation
 // ============================================
 describe('Decision Table - Request Time Validation', () => {
-    const today = new Date().toISOString().split('T')[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    // Use explicit weekdays to avoid weekend issues
+    const thursday = '2026-01-29';  // Thursday (for full-day requests)
+    const friday = '2026-01-30';    // Friday (for today with attendance)
 
-    // Create attendance for today to test partial requests
+    // Create attendance for friday to test partial requests
     beforeAll(async () => {
         await Attendance.create({
             userId: employeeId,
-            date: today,
-            checkInAt: new Date(`${today}T09:00:00+07:00`)
+            date: friday,
+            checkInAt: new Date(`${friday}T09:00:00+07:00`)
         });
     });
 
@@ -294,9 +296,9 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: yesterday,
-                requestedCheckInAt: `${yesterday}T08:30:00+07:00`,
-                requestedCheckOutAt: `${yesterday}T17:30:00+07:00`,
+                date: thursday,
+                requestedCheckInAt: `${thursday}T08:30:00+07:00`,
+                requestedCheckOutAt: `${thursday}T17:30:00+07:00`,
                 reason: 'Decision table test 1'
             });
         expect(res.status).toBe(201);
@@ -307,9 +309,9 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: yesterday,
-                requestedCheckInAt: `${yesterday}T17:30:00+07:00`,
-                requestedCheckOutAt: `${yesterday}T08:30:00+07:00`,
+                date: thursday,
+                requestedCheckInAt: `${thursday}T17:30:00+07:00`,
+                requestedCheckOutAt: `${thursday}T08:30:00+07:00`,
                 reason: 'Decision table test 2'
             });
         expect(res.status).toBe(400);
@@ -320,8 +322,8 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: today,
-                requestedCheckOutAt: `${today}T17:30:00+07:00`,
+                date: friday,
+                requestedCheckOutAt: `${friday}T17:30:00+07:00`,
                 reason: 'Decision table test 3'
             });
         expect(res.status).toBe(201);
@@ -332,26 +334,77 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: today,
-                requestedCheckOutAt: `${today}T08:00:00+07:00`,
+                date: friday,
+                requestedCheckOutAt: `${friday}T08:00:00+07:00`,
                 reason: 'Decision table test 4'
             });
         expect(res.status).toBe(400);
     });
 
-    it('Rule 5: Cross-day checkOut (different dateKey) → 400', async () => {
-        const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    /**
+     * Rule 5a: Cross-midnight WITHIN grace period → ACCEPT
+     * 
+     * Business Logic:
+     * - Check-in: 2026-01-28 (Wednesday) 20:00 GMT+7
+     * - Check-out: 2026-01-29 (Thursday) 04:00 GMT+7 (8 hours later)
+     * - Session length: 8 hours (< 24h grace period) ✅
+     * - Submission: Same day as check-in ✅
+     * 
+     * Expected: 201 CREATED (Policy A: True cross-midnight support)
+     */
+    it('Rule 5a: Cross-midnight within grace → 201', async () => {
+        // Use explicit Wednesday/Thursday for cross-midnight test (different from Rule 1's Thursday)
+        const wednesday = '2026-01-28';  // Wednesday
+        const thursday = '2026-01-29';   // Thursday (next day)
+        
         const res = await request(app)
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: today,
-                requestedCheckInAt: `${today}T08:30:00+07:00`,
-                requestedCheckOutAt: `${tomorrow}T02:00:00+07:00`,
-                reason: 'Decision table test 5'
+                date: wednesday,  // Request date = check-in date
+                requestedCheckInAt: `${wednesday}T20:00:00+07:00`,  // 8pm Wednesday
+                requestedCheckOutAt: `${thursday}T04:00:00+07:00`,  // 4am Thursday
+                reason: 'Cross-midnight OT (8h shift)'
             });
+        
+        // Validation 1: Status must be 201 (cross-midnight accepted)
+        expect(res.status).toBe(201);
+        
+        // Validation 2: Response structure (basic sanity check)
+        expect(res.body).toHaveProperty('request');
+        expect(res.body.request).toHaveProperty('_id');
+    });
+
+    /**
+     * Rule 5b: Beyond submission window → REJECT
+     * 
+     * Business Logic:
+     * - Request created: Today (2026-02-01)
+     * - Check-in date: 2026-01-20 (12 days ago, Tuesday)
+     * - Submission window: 7 days max (from ADJUST_REQUEST_MAX_DAYS)
+     * - Time since check-in: 12 days > 7 days ❌
+     * 
+     * Expected: 400 BAD REQUEST (Rule 2: Submission window exceeded)
+     */
+    it('Rule 5b: Beyond submission window → 400', async () => {
+        // Use explicit old Tuesday (12 days ago from Feb 1)
+        const oldTuesday = '2026-01-20';  // Tuesday, 12 days before 2026-02-01
+        
+        const res = await request(app)
+            .post('/api/requests')
+            .set('Authorization', `Bearer ${employeeToken}`)
+            .send({
+                date: oldTuesday,
+                requestedCheckInAt: `${oldTuesday}T08:00:00+07:00`,
+                requestedCheckOutAt: `${oldTuesday}T17:00:00+07:00`,
+                reason: 'Too old request (submitted 12 days after check-in)'
+            });
+        
+        // Validation 1: Status must be 400 (submission window exceeded)
         expect(res.status).toBe(400);
-        expect(res.body.message).toContain('same date');
+        
+        // Validation 2: Error message mentions "days" or "expired" (indicates Rule 2 violation)
+        expect(res.body.message).toMatch(/days|expired/);
     });
 
     it('Rule 6: No times provided, only date → 400', async () => {
@@ -359,7 +412,7 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: today,
+                date: friday,
                 reason: 'Decision table test 6'
             });
         expect(res.status).toBe(400);
@@ -370,8 +423,8 @@ describe('Decision Table - Request Time Validation', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: today,
-                requestedCheckInAt: `${today}T08:30:00+07:00`
+                date: friday,
+                requestedCheckInAt: `${friday}T08:30:00+07:00`
             });
         expect(res.status).toBe(400);
         expect(res.body.message).toContain('Reason');
@@ -437,20 +490,21 @@ describe('Error Guessing - Common Implementation Mistakes', () => {
 // LATE COUNT VERIFICATION (Business Rule)
 // ============================================
 describe('Business Rule - Late Count Calculation', () => {
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    // Use explicit Thursday (2026-01-29) instead of dynamic yesterday (Saturday)
+    const thursday = '2026-01-29';
 
     beforeAll(async () => {
         // Create late attendance (check-in after 08:45)
         await Attendance.create({
             userId: employee2Id,
-            date: yesterday,
-            checkInAt: new Date(`${yesterday}T09:15:00+07:00`), // 30 min late
-            checkOutAt: new Date(`${yesterday}T17:30:00+07:00`)
+            date: thursday,
+            checkInAt: new Date(`${thursday}T09:15:00+07:00`), // 30 min late
+            checkOutAt: new Date(`${thursday}T17:30:00+07:00`)
         });
     });
 
     it('Report should count late correctly (lateMinutes > 0)', async () => {
-        const month = yesterday.slice(0, 7);
+        const month = thursday.slice(0, 7);
         const res = await request(app)
             .get(`/api/reports/monthly?scope=team&teamId=${team2Id}&month=${month}`)
             .set('Authorization', `Bearer ${adminToken}`);
