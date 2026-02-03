@@ -122,15 +122,15 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
 
   // Cross-midnight OT: Validate checkIn is on request.date
   if (checkIn) {
+    // Bug #1 Fix: Validate timezone BEFORE parsing to provide clear error message
+    assertHasTzIfString(requestedCheckInAt, 'requestedCheckInAt');
+
     const checkInDateKey = getDateKey(checkIn);
     if (checkInDateKey !== date) {
       const error = new Error('requestedCheckInAt must be on the same date as request date (GMT+7)');
       error.statusCode = 400;
       throw error;
     }
-
-    // Bug #1 Fix: Use helper to validate timezone only for string inputs
-    assertHasTzIfString(requestedCheckInAt, 'requestedCheckInAt');
   }
 
   // Business rule: If attendance doesn't exist for this date, checkInAt is required
@@ -185,9 +185,14 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     assertHasTzIfString(requestedCheckOutAt, 'requestedCheckOutAt');
 
     // Issue #3: Block future checkout (tolerance: 1 minute for clock skew)
+    // EXCEPT for cross-midnight sessions (validated by session length instead)
     const now = Date.now();
     const tolerance = 60 * 1000; // 1 minute
-    if (checkOut.getTime() > now + tolerance) {
+    
+    // Detect cross-midnight: checkout date > checkin date
+    const isCrossMidnight = anchorTime && getDateKey(checkOut) > getDateKey(anchorTime);
+    
+    if (!isCrossMidnight && checkOut.getTime() > now + tolerance) {
       const error = new Error('requestedCheckOutAt cannot be in the future');
       error.statusCode = 400;
       throw error;
@@ -244,10 +249,21 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     }
   }
 
-  // Prevent duplicate PENDING requests for the same date (Overlapping fix)
+  // P0 Fix: Compute dates with correct semantics for cross-midnight support
+  const computedCheckInDate = date; // date = anchor check-in date
+  const computedCheckOutDate = checkOut ? getDateKey(checkOut) : null;
+
+  // P0 Fix: Validate cross-midnight ordering (checkOut cannot be before checkIn date)
+  if (computedCheckOutDate && computedCheckOutDate < computedCheckInDate) {
+    const error = new Error('requestedCheckOutAt must be on or after check-in date (GMT+7)');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Prevent duplicate PENDING requests (P2 Fix: use checkInDate to match unique index)
   const existingPendingRequest = await Request.findOne({
     userId,
-    date,
+    checkInDate: computedCheckInDate,
     type: 'ADJUST_TIME',
     status: 'PENDING'
   }).select('_id');
@@ -263,7 +279,9 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   try {
     const request = await Request.create({
       userId,
-      date,
+      date: computedCheckInDate,  // Backward compat
+      checkInDate: computedCheckInDate,  // P0 Fix: Explicit for unique index + invariant
+      checkOutDate: computedCheckOutDate, // P0 Fix: Computed from requestedCheckOutAt (null or D+1)
       type: 'ADJUST_TIME',
       requestedCheckInAt: checkIn,
       requestedCheckOutAt: checkOut,
@@ -399,7 +417,7 @@ export const getPendingRequests = async (user, options = {}) => {
 
   const requests = await Request.find(filter)
     .populate('userId', 'name employeeCode email teamId')
-    .sort({ createdAt: 1 })  // Oldest first for approval queue
+    .sort({ createdAt: -1 })  // Newest first (consistent with employee view)
     .skip(skip)
     .limit(limit)
     .lean();
@@ -665,6 +683,9 @@ export const rejectRequest = async (requestId, approver) => {
 async function updateAttendanceFromRequest(request) {
   const { userId, date, requestedCheckInAt, requestedCheckOutAt } = request;
 
+  // P1 Fix: Extract ObjectId safely (handle both populated and non-populated userId)
+  const userObjectId = userId?._id ?? userId;
+
   const updateFields = {};
 
   if (requestedCheckInAt) {
@@ -677,7 +698,7 @@ async function updateAttendanceFromRequest(request) {
 
   // Defensive check: cannot create new attendance without checkInAt
   // (validation in createRequest should prevent this, but guard here for safety)
-  const exists = await Attendance.exists({ userId, date });
+  const exists = await Attendance.exists({ userId: userObjectId, date });
 
   if (!exists && !requestedCheckInAt) {
     const error = new Error('Cannot create attendance without check-in time');
@@ -687,15 +708,15 @@ async function updateAttendanceFromRequest(request) {
 
   // Atomic upsert: create if not exists, update if exists
   await Attendance.findOneAndUpdate(
-    { userId, date },
+    { userId: userObjectId, date },
     {
       $set: updateFields,
       $setOnInsert: {
-        userId,
+        userId: userObjectId,
         date
       }
     },
-    { upsert: true, new: true }
+    { upsert: true, new: true, runValidators: true }  // P0 Fix: Add runValidators for defense-in-depth
   );
 }
 /**

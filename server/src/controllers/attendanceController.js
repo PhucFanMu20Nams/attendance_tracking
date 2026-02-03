@@ -106,8 +106,7 @@ export const getMyAttendance = async (req, res) => {
  * RBAC:
  * - MANAGER: scope=team only (teamId ignored, uses token.user.teamId)
  * - ADMIN: scope=company (all users) OR scope=team (requires teamId)
- */
-export const getTodayAttendance = async (req, res) => {
+ */export const getTodayAttendance = async (req, res) => {
   try {
     const { role, teamId: userTeamId } = req.user;
     // Normalize query params (handle whitespace + array edge cases)
