@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
     Card,
     Label,
@@ -20,12 +20,10 @@ import { createRequest } from '../../api/requestApi';
  * @param {Function} props.onSuccess - Called after successful creation
  */
 export default function CreateRequestForm({ onSuccess }) {
-    // Get today in GMT+7 for default date
-    const today = useMemo(() => {
-        return new Date().toLocaleDateString('sv-SE', {
-            timeZone: 'Asia/Ho_Chi_Minh',
-        });
-    }, []);
+    // Get today in GMT+7 for default date (recompute on each render to avoid stale)
+    const today = new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+    });
 
     // Form state
     const [formData, setFormData] = useState(() => ({
@@ -41,6 +39,7 @@ export default function CreateRequestForm({ onSuccess }) {
     const [submitting, setSubmitting] = useState(false);
     const [formError, setFormError] = useState('');
     const [formSuccess, setFormSuccess] = useState('');
+    const [isNextDayCheckout, setIsNextDayCheckout] = useState(false);
 
     // Handle input changes
     const handleInputChange = (e) => {
@@ -50,6 +49,7 @@ export default function CreateRequestForm({ onSuccess }) {
         if (name === 'requestType') {
             setFormError('');
             setFormSuccess('');
+            setIsNextDayCheckout(false); // Clear checkbox
 
             // Single setFormData call with branching logic
             setFormData((prev) => {
@@ -73,15 +73,102 @@ export default function CreateRequestForm({ onSuccess }) {
             return;  // Early return to avoid double state update
         }
 
+        // Clear checkbox if changing times (user might be adjusting)
+        if (name === 'checkInTime' || name === 'checkOutTime') {
+            setIsNextDayCheckout(false);
+        }
+
         // Normal field update
         setFormData((prev) => ({ ...prev, [name]: value }));
     };
 
+    /**
+     * Add days to a date string (timezone-safe, pure string manipulation)
+     * Handles month/year boundaries correctly
+     * Returns null if input is invalid
+     */
+    const addDaysToDate = (dateStr, days) => {
+        // Defensive: validate input format
+        if (!dateStr || typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            return null;
+        }
+        
+        const [year, month, day] = dateStr.split('-').map(Number);
+        
+        // Defensive: check for NaN after parsing
+        if (isNaN(year) || isNaN(month) || isNaN(day)) {
+            return null;
+        }
+        
+        // Defensive: validate date ranges
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+            return null;
+        }
+        
+        // Days in each month (non-leap year)
+        const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        
+        // Check leap year for February
+        const isLeapYear = (y) => (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+        if (isLeapYear(year)) {
+            daysInMonth[1] = 29;
+        }
+        
+        let newDay = day + days;
+        let newMonth = month;
+        let newYear = year;
+        
+        // Handle month overflow
+        while (newDay > daysInMonth[newMonth - 1]) {
+            newDay -= daysInMonth[newMonth - 1];
+            newMonth++;
+            
+            // Handle year overflow
+            if (newMonth > 12) {
+                newMonth = 1;
+                newYear++;
+                // Recalculate leap year for new year
+                daysInMonth[1] = isLeapYear(newYear) ? 29 : 28;
+            }
+        }
+        
+        return `${newYear}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`;
+    };
+
+    /**
+     * Detect if checkout time is cross-midnight (checkout < checkin means next day)
+     * Only applies when BOTH times are provided
+     */
+    const isCrossMidnightCheckout = (checkInTime, checkOutTime) => {
+        if (!checkInTime || !checkOutTime) return false;
+        // String comparison: "02:00" < "22:00" = true → cross-midnight
+        return checkOutTime < checkInTime;
+    };
+
+    /**
+     * Format next day date for hint display (DD/MM/YYYY)
+     */
+    const getNextDayDisplay = (dateStr) => {
+        if (!dateStr) return '';
+        const nextDay = addDaysToDate(dateStr, 1);
+        if (!nextDay) return ''; // Handle invalid input
+        const [year, month, day] = nextDay.split('-');
+        return `${day}/${month}/${year}`;
+    };
+
     // Build ISO timestamp from date + time (GMT+7)
-    const buildIsoTimestamp = (dateStr, timeStr) => {
+    // Supports cross-midnight by adding days to the date
+    const buildIsoTimestamp = (dateStr, timeStr, addDays = 0) => {
         if (!dateStr || !timeStr) return null;
+        
+        let targetDate = dateStr;
+        if (addDays > 0) {
+            targetDate = addDaysToDate(dateStr, addDays);
+            if (!targetDate) return null; // Handle invalid date arithmetic
+        }
+        
         const hhmm = timeStr.slice(0, 5);
-        return `${dateStr}T${hhmm}:00+07:00`;
+        return `${targetDate}T${hhmm}:00+07:00`;
     };
 
     // Handle form submit
@@ -137,10 +224,14 @@ export default function CreateRequestForm({ onSuccess }) {
                 setFormError('Vui lòng nhập ít nhất check-in hoặc check-out');
                 return;
             }
-            if (formData.checkInTime && formData.checkOutTime && 
-                formData.checkOutTime <= formData.checkInTime) {
-                setFormError('Giờ check-out phải sau giờ check-in');
-                return;
+            // Cross-midnight validation: allow checkout < checkin (means next day)
+            // Backend will validate session length (max 24h)
+            if (formData.checkInTime && formData.checkOutTime) {
+                const isCrossMidnight = isCrossMidnightCheckout(formData.checkInTime, formData.checkOutTime);
+                if (!isCrossMidnight && formData.checkOutTime <= formData.checkInTime) {
+                    setFormError('Giờ check-out phải sau giờ check-in');
+                    return;
+                }
             }
         }
 
@@ -156,13 +247,24 @@ export default function CreateRequestForm({ onSuccess }) {
                 payload.leaveEndDate = formData.leaveEndDate;
                 payload.leaveType = formData.leaveType;
             } else {
-                // ADJUST_TIME (existing logic)
+                // ADJUST_TIME: Support cross-midnight checkout
                 payload.date = formData.date;
                 if (formData.checkInTime) {
                     payload.requestedCheckInAt = buildIsoTimestamp(formData.date, formData.checkInTime);
                 }
                 if (formData.checkOutTime) {
-                    payload.requestedCheckOutAt = buildIsoTimestamp(formData.date, formData.checkOutTime);
+                    // Cross-midnight detection:
+                    // 1. Auto-detect: checkout < checkin (both provided)
+                    // 2. Explicit: checkbox checked (for checkout-only case)
+                    const autoDetectCrossMidnight = isCrossMidnightCheckout(formData.checkInTime, formData.checkOutTime);
+                    const explicitCrossMidnight = isNextDayCheckout && !formData.checkInTime;
+                    const crossMidnight = autoDetectCrossMidnight || explicitCrossMidnight;
+                    
+                    payload.requestedCheckOutAt = buildIsoTimestamp(
+                        formData.date, 
+                        formData.checkOutTime, 
+                        crossMidnight ? 1 : 0
+                    );
                 }
             }
 
@@ -180,6 +282,7 @@ export default function CreateRequestForm({ onSuccess }) {
                 leaveType: 'ANNUAL',
                 reason: '',
             });
+            setIsNextDayCheckout(false);
             
             // Notify parent
             onSuccess?.();
@@ -273,6 +376,29 @@ export default function CreateRequestForm({ onSuccess }) {
                                 value={formData.checkOutTime}
                                 onChange={handleInputChange}
                             />
+                            
+                            {/* Cross-midnight auto-detection hint */}
+                            {isCrossMidnightCheckout(formData.checkInTime, formData.checkOutTime) && (
+                                <p className="text-xs text-indigo-600 mt-1">
+                                    ⏰ Check-out sẽ tính là ngày {getNextDayDisplay(formData.date)}
+                                </p>
+                            )}
+                            
+                            {/* Checkbox for checkout-only cross-midnight */}
+                            {formData.checkOutTime && !formData.checkInTime && (
+                                <label className="flex items-center mt-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        checked={isNextDayCheckout}
+                                        onChange={(e) => setIsNextDayCheckout(e.target.checked)}
+                                        className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                    />
+                                    <span className="ml-2 text-sm text-gray-700">
+                                        Check-out là ngày hôm sau
+                                        {isNextDayCheckout && ` (${getNextDayDisplay(formData.date)})`}
+                                    </span>
+                                </label>
+                            )}
                         </div>
                     </div>
                 ) : (

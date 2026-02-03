@@ -35,8 +35,8 @@ export default function RequestsPage() {
 
     // Handle successful request creation
     const handleCreateSuccess = () => {
-        // Navigate to page 1 to show new request (backend sorts newest-first)
-        setPage(1);
+        // Force refetch to show new request (works even on page 1)
+        refetch();
     };
 
     return (

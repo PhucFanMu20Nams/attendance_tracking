@@ -24,7 +24,9 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
     // Format helpers
     const formatTime = (isoString) => {
         if (!isoString) return '--:--';
-        return new Date(isoString).toLocaleTimeString('vi-VN', {
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return '--:--';
+        return date.toLocaleTimeString('vi-VN', {
             timeZone: 'Asia/Ho_Chi_Minh',
             hour: '2-digit',
             minute: '2-digit',
@@ -45,7 +47,9 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
 
     const formatDateTime = (isoString) => {
         if (!isoString) return 'N/A';
-        return new Date(isoString).toLocaleString('vi-VN', {
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return 'N/A';
+        return date.toLocaleString('vi-VN', {
             timeZone: 'Asia/Ho_Chi_Minh',
             day: '2-digit',
             month: '2-digit',
@@ -53,6 +57,104 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
             hour: '2-digit',
             minute: '2-digit',
         });
+    };
+
+    /**
+     * Detect if request has cross-midnight checkout
+     * Uses checkInDate/checkOutDate if available, otherwise compare timestamps
+     */
+    const isCrossMidnight = (req) => {
+        if (req.type !== 'ADJUST_TIME') return false;
+        if (!req.requestedCheckOutAt) return false;
+        
+        // Prefer model fields (checkInDate, checkOutDate) if available
+        if (req.checkInDate && req.checkOutDate) {
+            return req.checkOutDate > req.checkInDate;
+        }
+        
+        // Fallback: compare ISO date portions
+        if (req.requestedCheckInAt && req.requestedCheckOutAt) {
+            // Guard against Date objects - ensure strings before slice
+            const checkInStr = typeof req.requestedCheckInAt === 'string' ? req.requestedCheckInAt : req.requestedCheckInAt.toISOString();
+            const checkOutStr = typeof req.requestedCheckOutAt === 'string' ? req.requestedCheckOutAt : req.requestedCheckOutAt.toISOString();
+            const checkInDay = checkInStr.slice(0, 10);
+            const checkOutDay = checkOutStr.slice(0, 10);
+            return checkOutDay > checkInDay;
+        }
+        
+        // Checkout-only: compare with request.date
+        if (req.date && req.requestedCheckOutAt) {
+            // Guard against Date objects
+            const checkOutStr = typeof req.requestedCheckOutAt === 'string' ? req.requestedCheckOutAt : req.requestedCheckOutAt.toISOString();
+            const checkOutDay = checkOutStr.slice(0, 10);
+            return checkOutDay > req.date;
+        }
+        
+        return false;
+    };
+
+    /**
+     * Add days to a date string (timezone-safe, pure string manipulation)
+     * Handles month/year boundaries correctly
+     * Returns null if input is invalid
+     */
+    const addDaysToDate = (dateStr, days) => {
+        if (!dateStr || typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            return null;
+        }
+        
+        const [year, month, day] = dateStr.split('-').map(Number);
+        
+        if (isNaN(year) || isNaN(month) || isNaN(day)) {
+            return null;
+        }
+        
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+            return null;
+        }
+        
+        const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        
+        const isLeapYear = (y) => (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+        if (isLeapYear(year)) {
+            daysInMonth[1] = 29;
+        }
+        
+        let newDay = day + days;
+        let newMonth = month;
+        let newYear = year;
+        
+        while (newDay > daysInMonth[newMonth - 1]) {
+            newDay -= daysInMonth[newMonth - 1];
+            newMonth++;
+            
+            if (newMonth > 12) {
+                newMonth = 1;
+                newYear++;
+                daysInMonth[1] = isLeapYear(newYear) ? 29 : 28;
+            }
+        }
+        
+        return `${newYear}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`;
+    };
+
+    /**
+     * Format time with date information for cross-midnight sessions
+     * Shows clear date instead of confusing +1 badge
+     */
+    const formatTimeWithDate = (isoString, isCrossMidnightFlag, baseDate) => {
+        if (!isoString) return '--:--';
+        
+        const time = formatTime(isoString);
+        if (!isCrossMidnightFlag || !baseDate) return time;
+        
+        const nextDay = addDaysToDate(baseDate, 1);
+        if (nextDay) {
+            const [, month, day] = nextDay.split('-');
+            return `${time} (${day}/${month})`;
+        }
+        
+        return `${time} (+1)`;
     };
 
     const getStatusBadge = (status) => {
@@ -136,7 +238,7 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                                                     Vào: {formatTime(req.requestedCheckInAt)}
                                                 </span>
                                                 <span className="text-sm">
-                                                    Ra: {formatTime(req.requestedCheckOutAt)}
+                                                    Ra: {formatTimeWithDate(req.requestedCheckOutAt, isCrossMidnight(req), req.date)}
                                                 </span>
                                             </div>
                                         )}
@@ -165,7 +267,13 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
 
             {/* Pagination - at bottom */}
             {safePagination.totalPages > 1 && (
-                <div className="mt-4 flex justify-center">
+                <div className="mt-4 flex flex-col items-center gap-2">
+                    {/* Page indicator text */}
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                        Trang {currentPage} / {safePagination.totalPages}
+                    </div>
+                    
+                    {/* Pagination buttons */}
                     <Pagination
                         currentPage={currentPage}
                         totalPages={safePagination.totalPages}

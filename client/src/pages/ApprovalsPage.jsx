@@ -82,8 +82,8 @@ export default function ApprovalsPage() {
             setModalAction(null);
             setActionError('');
 
-            // #3 Navigate to page 1 (consistency with RequestsPage)
-            setPage(1);
+            // Force refetch to update list (works even on page 1)
+            refetch();
         } catch (err) {
             setActionError(err.response?.data?.message || 
                 `${modalAction === 'approve' ? 'Duyệt' : 'Từ chối'} thất bại`);

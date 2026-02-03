@@ -204,7 +204,13 @@ export default function PendingRequestsTable({
 
             {/* Pagination - at bottom */}
             {safePagination.totalPages > 1 && (
-                <div className="mt-4 flex justify-center">
+                <div className="mt-4 flex flex-col items-center gap-2">
+                    {/* Page indicator text */}
+                    <div className="text-sm text-gray-600 dark:text-gray-400">
+                        Trang {currentPage} / {safePagination.totalPages}
+                    </div>
+                    
+                    {/* Pagination buttons */}
                     <Pagination
                         currentPage={currentPage}
                         totalPages={safePagination.totalPages}
