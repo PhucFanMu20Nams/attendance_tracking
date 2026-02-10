@@ -94,3 +94,13 @@ export const approveRequest = (requestId, config = {}) =>
  */
 export const rejectRequest = (requestId, config = {}) =>
     client.post(`/requests/${requestId}/reject`, {}, config);
+
+/**
+ * Cancel an OT request (DELETE).
+ * Only PENDING OT requests can be cancelled.
+ * @param {string} requestId - Request ID
+ * @param {Object} [config={}] - Axios config
+ * @returns {Promise} Success message
+ */
+export const cancelOtRequest = (requestId, config = {}) =>
+    client.delete(`/requests/${requestId}`, config);
