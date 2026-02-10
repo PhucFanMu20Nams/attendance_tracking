@@ -146,15 +146,15 @@ export default function () {
                     console.warn(`⚠️  ${user.identifier}: checkIn date is today (${checkInDay}), expected yesterday`);
                 }
 
-                // Verify OT starts accruing after 18:30
+                // Verify OT starts accruing after 17:31
                 const now = new Date();
                 const endOfShift = new Date(checkInDate);
-                endOfShift.setHours(18, 30, 0, 0);
-                endOfShift.setDate(endOfShift.getDate() + 1); // Next day 18:30
+                endOfShift.setHours(17, 31, 0, 0);
+                endOfShift.setDate(endOfShift.getDate() + 1); // Next day 17:31
 
                 if (now > endOfShift && data.otMinutes !== undefined) {
                     if (data.otMinutes <= 0) {
-                        console.warn(`⚠️  ${user.identifier}: OT should be positive after 18:30, got ${data.otMinutes}`);
+                        console.warn(`⚠️  ${user.identifier}: OT should be positive after 17:31, got ${data.otMinutes}`);
                     }
                 }
 
