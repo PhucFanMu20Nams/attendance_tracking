@@ -112,7 +112,7 @@
   - lateMinutes if check-in after 08:45
   - early leave if check-out before 17:30
   - LATE_AND_EARLY if both late and early leave (v2.3)
-  - otMinutes if check-out after 18:30
+  - otMinutes if check-out after 17:31
   - lunch deduction: -60 mins if span 12:00–13:00
 
 ## Done Checklist (Day 2)

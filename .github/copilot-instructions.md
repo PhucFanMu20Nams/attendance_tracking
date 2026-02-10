@@ -88,7 +88,7 @@ You are a Senior Software Engineer. Optimize for **beginner-friendly MVP deliver
   - Unique index: **(userId, date)**
 - Schedule: 08:30–17:30, grace 15m (<=08:45 on-time; >=08:46 late)
 - Lunch: deduct 60m only if interval spans **12:00–13:00**
-- OT: if `checkOutAt > 18:30` then `otMinutes = diff(checkOutAt, 18:30)`
+- OT: if `checkOutAt > 17:31` then `otMinutes = diff(checkOutAt, 17:31)`
 - **Do NOT store status in DB**. Always compute on query/report:
   - Today + in != null + out == null => **WORKING**
   - Past day + in != null + out == null => **MISSING_CHECKOUT**

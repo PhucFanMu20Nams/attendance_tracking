@@ -108,7 +108,8 @@ Response:
   userId,
   date,        // dateKey
   checkInAt,
-  checkOutAt   // null if not checked out
+  checkOutAt,  // null if not checked out
+  otApproved   // boolean (NEW v2.6) - true if OT_REQUEST approved for this date
 }
 
 ## POST /attendance/check-out
@@ -122,9 +123,9 @@ Behavior:
 - Set checkOutAt = now
 
 Response:
-- attendance: { _id, userId, date, checkInAt, checkOutAt }
+- attendance: { _id, userId, date, checkInAt, checkOutAt, otApproved }
 
-## GET /attendance/me?month=YYYY-MM
+## GET /attendance/me?month=YYYY-MM (UPDATED v2.6)
 Roles: EMPLOYEE | MANAGER | ADMIN
 
 Response:
@@ -133,10 +134,11 @@ Response:
     date,          // "YYYY-MM-DD"
     checkInAt,
     checkOutAt,
+    otApproved,    // boolean (NEW v2.6) - from approved OT_REQUEST
     status,        // computed, can be null for "today/future not checked-in"
     lateMinutes,   // computed
-    workMinutes,   // computed
-    otMinutes      // computed
+    workMinutes,   // computed (capped at 17:30 if !otApproved, see §10.5)
+    otMinutes      // computed (0 if !otApproved, see §10.5)
   }
 ]
 
@@ -185,11 +187,14 @@ Response:
       "attendance": {
         "date": "YYYY-MM-DD",
         "checkInAt": "ISO",
-        "checkOutAt": "ISO|null"
+        "checkOutAt": "ISO|null",
+        "otApproved": true|false
       },
       "computed": {
         "status": "WORKING|ON_TIME|LATE|EARLY_LEAVE|LATE_AND_EARLY|MISSING_CHECKOUT|WEEKEND_OR_HOLIDAY|ABSENT|LEAVE|null",
-        "lateMinutes": 0
+        "lateMinutes": 0,
+        "workMinutes": 0,
+        "otMinutes": 0
       }
     }
   ],
@@ -210,13 +215,14 @@ Response:
 Roles: EMPLOYEE | MANAGER | ADMIN
 
 Request body:
-- type: "ADJUST_TIME" | "LEAVE" [optional, default "ADJUST_TIME"]
-- date: "YYYY-MM-DD" [required if type=ADJUST_TIME; ignored if type=LEAVE]
-- requestedCheckInAt: ISO string (optional)
-- requestedCheckOutAt: ISO string (optional)
+- type: "ADJUST_TIME" | "LEAVE" | "OT_REQUEST" [optional, default "ADJUST_TIME"]
+- date: "YYYY-MM-DD" [required if type=ADJUST_TIME or OT_REQUEST; ignored if type=LEAVE]
+- requestedCheckInAt: ISO string (optional, for ADJUST_TIME only)
+- requestedCheckOutAt: ISO string (optional, for ADJUST_TIME only)
+- estimatedEndTime: ISO string (optional, for OT_REQUEST only)
 - reason: string
 
-Rules:
+Rules (ADJUST_TIME):
 - If requestedCheckInAt exists, it must be on request.date in GMT+7 (same dateKey)
 - If requestedCheckOutAt exists, it must be on request.date in GMT+7 (same dateKey)
 - If both exist, requestedCheckOutAt must be > requestedCheckInAt
@@ -237,13 +243,105 @@ Rules:
 - Max leave range: 30 days
 - Cannot overlap with existing approved leave
 
-## GET /requests/me (UPDATED v2.4)
+### OT Request (NEW v2.6)
+If type = "OT_REQUEST":
+- date: "YYYY-MM-DD" [required] - Must be today or future date (NOT retroactive)
+- estimatedEndTime: ISO string [optional] - If provided, must be on request.date in GMT+7
+- reason: string [required] - Why OT is needed
+
+Rules (see docs/rules.md §10):
+- E1: Must be created today or future dates only (no retroactive OT requests)
+- E2: If date already has APPROVED OT_REQUEST, new request extends estimatedEndTime instead of creating duplicate
+- I1: Cross-midnight OT requires TWO separate requests (one per date)
+- Validation: If estimatedEndTime provided, must be >= 17:30 + 30min = 18:00 (minimum 30min OT)
+- Cannot create OT_REQUEST if date has approved LEAVE request
+
+Example Request Body (Single-day OT):
+```json
+{
+  "type": "OT_REQUEST",
+  "date": "2025-01-15",
+  "estimatedEndTime": "2025-01-15T19:00:00+07:00",
+  "reason": "Need to complete sprint deployment"
+}
+```
+
+Example Request Body (Cross-midnight OT - First Request):
+```json
+{
+  "type": "OT_REQUEST",
+  "date": "2025-01-15",
+  "estimatedEndTime": "2025-01-15T23:59:59+07:00",
+  "reason": "Cross-midnight deployment part 1"
+}
+```
+
+Example Request Body (Cross-midnight OT - Second Request):
+```json
+{
+  "type": "OT_REQUEST",
+  "date": "2025-01-16",
+  "estimatedEndTime": "2025-01-16T02:00:00+07:00",
+  "reason": "Cross-midnight deployment part 2"
+}
+```
+
+Response:
+```json
+{
+  "request": {
+    "_id": "...",
+    "user": "userId",
+    "type": "OT_REQUEST",
+    "date": "2025-01-15",
+    "estimatedEndTime": "2025-01-15T19:00:00.000Z",
+    "reason": "Need to complete sprint deployment",
+    "status": "PENDING",
+    "createdAt": "...",
+    "updatedAt": "..."
+  }
+}
+```
+
+## DELETE /requests/:id (NEW v2.6)
+Roles: EMPLOYEE | MANAGER | ADMIN
+
+Behavior:
+- EMPLOYEE: Can only delete their own PENDING requests (status must be PENDING)
+- MANAGER/ADMIN: Can delete any PENDING requests from their team/company
+
+Rules (see docs/rules.md §10.7):
+- Only PENDING requests can be deleted (APPROVED/REJECTED cannot be deleted)
+- H1: After check-in today, cannot delete today's OT_REQUEST (must wait until next day)
+- H2: Can always cancel tomorrow/future OT_REQUEST (before check-in)
+
+Response:
+```json
+{
+  "message": "Request cancelled successfully",
+  "request": {
+    "_id": "...",
+    "type": "OT_REQUEST",
+    "date": "2025-01-16",
+    "status": "PENDING"
+  }
+}
+```
+
+Error Cases:
+- 400: Cannot cancel today's OT request after check-in (see §10.7 H1)
+- 404: Request not found
+- 403: Not authorized to delete this request
+- 400: Cannot cancel APPROVED/REJECTED requests
+
+## GET /requests/me (UPDATED v2.6)
 Roles: EMPLOYEE | MANAGER | ADMIN
 
 Query params:
 - page: number (optional, default 1)
 - limit: number (optional, default 20, max 100)
 - status: string (optional, filter by PENDING|APPROVED|REJECTED)
+- type: string (optional, filter by ADJUST_TIME|LEAVE|OT_REQUEST) [NEW v2.6]
 
 Response:
 ```json
@@ -253,9 +351,13 @@ Response:
       "_id": "...",
       "userId": "...",
       "date": "YYYY-MM-DD",
-      "type": "ADJUST_TIME",
+      "type": "ADJUST_TIME | LEAVE | OT_REQUEST",
       "requestedCheckInAt": "ISO string | null",
       "requestedCheckOutAt": "ISO string | null",
+      "estimatedEndTime": "ISO string | null",
+      "leaveStartDate": "YYYY-MM-DD | null",
+      "leaveEndDate": "YYYY-MM-DD | null",
+      "leaveType": "ANNUAL | SICK | UNPAID | null",
       "reason": "...",
       "status": "PENDING | APPROVED | REJECTED",
       "approvedBy": { "_id", "name", "employeeCode" },
@@ -273,12 +375,13 @@ Response:
 }
 ```
 
-## GET /requests/pending (UPDATED v2.4)
+## GET /requests/pending (UPDATED v2.6)
 Roles: MANAGER | ADMIN
 
 Query params:
 - page: number (optional, default 1)
 - limit: number (optional, default 20, max 100)
+- type: string (optional, filter by ADJUST_TIME|LEAVE|OT_REQUEST) [NEW v2.6]
 
 Behavior:
 - MANAGER: only requests from users in the same team
@@ -298,9 +401,13 @@ Response:
         "teamId": "..."
       },
       "date": "YYYY-MM-DD",
-      "type": "ADJUST_TIME",
+      "type": "ADJUST_TIME | LEAVE | OT_REQUEST",
       "requestedCheckInAt": "ISO string | null",
       "requestedCheckOutAt": "ISO string | null",
+      "estimatedEndTime": "ISO string | null",
+      "leaveStartDate": "YYYY-MM-DD | null",
+      "leaveEndDate": "YYYY-MM-DD | null",
+      "leaveType": "ANNUAL | SICK | UNPAID | null",
       "reason": "...",
       "status": "PENDING",
       "createdAt": "ISO string",
@@ -320,15 +427,17 @@ Response:
 ## POST /requests/:id/approve
 Roles: MANAGER | ADMIN
 
+## POST /requests/:id/approve (UPDATED v2.6)
+Roles: MANAGER | ADMIN
+
 Behavior:
 - MANAGER: can only approve requests from users in same team (anti-IDOR)
 - ADMIN: can approve any request
-- Validate requested timestamps are on request.date (GMT+7), else 400
+- ADJUST_TIME: Validate requested timestamps are on request.date (GMT+7), else 400
+- ADJUST_TIME: Update attendance (create if missing, set checkInAt/checkOutAt)
+- OT_REQUEST: Set attendance.otApproved = true (see §10.8 for auto-create logic)
 - Update request status = APPROVED
-- Update attendance:
-  - If attendance does not exist => create it
-  - If requestedCheckInAt exists => set checkInAt
-  - If requestedCheckOutAt exists => set checkOutAt
+- Set approvedBy and approvedAt
 
 Response:
 - request: { ...updated... }
@@ -382,14 +491,22 @@ Roles:
 - MANAGER: scope=team only
 - ADMIN: scope=team or company
 
+## GET /reports/monthly?month=YYYY-MM&scope=team|company&teamId? (UPDATED v2.6)
+Roles:
+- MANAGER: scope=team only
+- ADMIN: scope=team or company
+
 Response:
 - summary: [
   {
     user: { _id, name, employeeCode },
     totalWorkMinutes,
     totalLateCount,
-    totalOtMinutes,
-    approvedOtMinutes (optional)
+    totalOtMinutes,        // Total OT worked (including unapproved)
+    approvedOtMinutes,     // NEW v2.6: Only approved OT (otApproved=true)
+    pendingOtRequests,     // NEW v2.6: Count of PENDING OT_REQUEST for this month
+    approvedOtRequests,    // NEW v2.6: Count of APPROVED OT_REQUEST for this month
+    rejectedOtRequests     // NEW v2.6: Count of REJECTED OT_REQUEST for this month
   }
 ]
 - details (optional)

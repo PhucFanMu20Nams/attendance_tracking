@@ -24,7 +24,7 @@
 - [ ] Check-in <= 08:45 → ON_TIME
 - [ ] Check-in >= 08:46 → LATE
 - [ ] Check-out < 17:30 → EARLY_LEAVE
-- [ ] Check-out > 18:30 → otMinutes > 0
+- [ ] Check-out > 17:31 → otMinutes > 0
 - [ ] Lunch deduction:
   - [ ] checkIn < 12:00 and checkOut > 13:00 → workMinutes deduct 60
   - [ ] otherwise → no lunch deduction

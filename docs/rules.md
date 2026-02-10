@@ -16,7 +16,7 @@ If docs conflict, resolve in this order:
   - Late starts at 08:46
 - Lunch break: 60 minutes
   - Deduct lunch if a work span crosses 12:00–13:00
-- OT starts after 18:30
+- OT starts after 17:31
 
 ## 2) Attendance Record Rules
 - One attendance record per user per day:
@@ -88,8 +88,8 @@ Else 0.
 
 ### 4.3 otMinutes
 If checkOutAt exists:
-- If checkOutAt time > 18:30:
-  - otMinutes = minutes between 18:30 and checkOutAt (excluding lunch already handled in workMinutes if needed)
+- If checkOutAt time > 17:31:
+  - otMinutes = minutes between 17:31 and checkOutAt (excluding lunch already handled in workMinutes if needed)
 Else 0.
 
 ## 5) Requests Adjustment Rules
@@ -202,8 +202,8 @@ On approve:
 - Configurable via env: `CHECKOUT_GRACE_HOURS` (default: 24)
 
 ### 9.3 OT Calculation
-- OT = minutes from 18:30 to checkOut (even if next day)
-- Example: 18:30 to 02:00 next day = 7.5 hours OT
+- OT = minutes from 17:31 to checkOut (even if next day)
+- Example: 17:31 to 02:00 next day = 8.5 hours OT
 
 ### 9.4 Matrix Display
 - Attendance record belongs to check-in date
@@ -221,3 +221,427 @@ On approve:
 - Lunch: deduct 60 mins ONCE if shift spans 12:00–13:00 on check-in day
 - No second lunch deduction for overnight shifts
 - No workMinutes cap (MVP): 20h shift => 1140 mins
+
+---
+
+## 10) OT Request Rules (NEW v2.6)
+
+### 10.1 Overview
+**Core Change:** OT (overtime) is now **approval-based**, not automatic.
+
+**Old Behavior (v2.5):**
+- User checks out after 17:31 → OT automatically calculated
+- No request/approval needed
+
+**New Behavior (v2.6):**
+- User must create `OT_REQUEST` BEFORE checkout
+- Manager/Admin approves → OT calculated
+- No approval → workMinutes capped at 17:30, OT = 0
+
+---
+
+### 10.2 OT Request Creation Rules
+
+**Who:** EMPLOYEE | MANAGER | ADMIN (any role can request OT for themselves)
+
+**When:**
+- ✅ Must request BEFORE checkout (E2: no retroactive)
+- ✅ Can request for today or future dates (E1: advance notice allowed)
+- ❌ Cannot request for past dates
+
+**Required Fields:**
+- `date`: "YYYY-MM-DD" (today or future)
+- `estimatedEndTime`: Date (ISO timestamp)
+- `reason`: String (why OT is needed)
+
+**Validation Rules:**
+
+1. **Date Validation:**
+   - `date >= todayKey` (no retroactive requests)
+   - Must be valid YYYY-MM-DD format
+
+2. **Time Validation:**
+   - `estimatedEndTime` must be on same calendar day (GMT+7) as `date`
+   - `estimatedEndTime` must be > 17:31 on that date
+   - Minimum OT duration: 30 minutes (B1)
+     - Calculated as: `estimatedEndTime - 17:31 >= 30 minutes`
+
+3. **State Validation:**
+   - Cannot create if user already checked out for that date
+   - Error: "Cannot request OT after checkout"
+
+4. **Quota Limits:**
+   - Maximum 31 PENDING OT requests per month per user (D1)
+   - Month calculated from `date` field
+
+**Auto-Extend Feature (D2):**
+- If PENDING OT request exists for same (userId, date):
+  - UPDATE existing request instead of creating new one
+  - Updates: `estimatedEndTime`, `reason`
+  - Keeps same `_id`, `status`, `createdAt`
+- Example:
+  ```
+  Request 1: date=2026-02-05, estimatedEndTime=20:00, status=PENDING
+  Request 2: date=2026-02-05, estimatedEndTime=22:00 (same date)
+  → Request 1 updated to estimatedEndTime=22:00
+  → Only 1 request exists
+  ```
+
+---
+
+### 10.3 Cross-Midnight OT (I1)
+
+**Rule:** Must create 2 separate OT requests for cross-midnight shifts.
+
+**Why:**
+- Each attendance record has 1 date (check-in date)
+- OT tied to specific attendance record
+- Cross-midnight = 2 attendance records = 2 OT requests
+
+**Example:**
+```
+Shift: 2026-02-05 08:30 → 2026-02-06 02:00
+
+Required Requests:
+1. OT_REQUEST: date=2026-02-05, estimatedEndTime=2026-02-05T23:59
+2. OT_REQUEST: date=2026-02-06, estimatedEndTime=2026-02-06T02:00
+
+Result:
+- Attendance 1 (2/5): otApproved=true, OT = 17:31-23:59
+- Attendance 2 (2/6): otApproved=true, OT = 00:00-02:00
+```
+
+**Validation:**
+- System rejects if `getDateKey(estimatedEndTime) != date`
+- Error message: "Cross-midnight OT requires separate requests for each date"
+
+---
+
+### 10.3.1 OT Request Timing Policy (STRICT) 🚫
+
+**Core Principle:** OT must be requested **BEFORE** the overtime work begins
+
+**Policy Details:**
+- ✅ **Future requests allowed:** Can request OT for today (future time) or any future date
+- ❌ **Retroactive requests blocked:** Cannot request OT for time that has already passed
+- ⏰ **Same-day rule:** For today's date, `estimatedEndTime` must be in the future
+
+**Implementation (P1-2 Fix):**
+```javascript
+// Validation runs AFTER past date check, BEFORE OT period check
+if (date === todayKey) {
+  const now = Date.now();
+  if (estimatedEndTime <= now) {
+    throw Error('Cannot create OT request for past time');
+  }
+}
+```
+
+**Examples:**
+
+| Current Time | Request Date | Estimated End Time | Result | Reason |
+|--------------|--------------|-------------------|--------|---------|
+| 16:00 | Today | 19:00 | ✅ ALLOW | Future time |
+| 23:00 | Today | 18:00 | ❌ REJECT | Past time (5 hours ago) |
+| 23:00 | Today | 23:00 | ❌ REJECT | Current time (not future) |
+| 23:00 | Today | 23:30 | ✅ ALLOW | Future time (30 min ahead) |
+| 10:00 | Tomorrow | 19:00 | ✅ ALLOW | Future date (any time OK) |
+| 10:00 | Yesterday | 19:00 | ❌ REJECT | Past date |
+
+**Rationale:**
+1. **Data Integrity:** Prevent retroactive OT recording abuse
+2. **Manager Approval:** Managers must approve OT **before** overtime work
+3. **Audit Trail:** Clear timestamp showing OT was planned, not fabricated
+4. **Fair Process:** All employees follow same "request first" rule
+
+**Exception Handling:**
+- If employee forgot to request: Contact manager for manual adjustment
+- Emergency OT: Manager can create ADJUST_TIME request after the fact (admin override)
+- System downtime: Manager can approve retroactive requests case-by-case
+
+**Error Message:**
+```
+Cannot create OT request for past time.
+OT must be requested before the estimated end time.
+Current time: 2/10/2026, 11:00:00 PM (GMT+7)
+Requested time: 2/10/2026, 6:00:00 PM (GMT+7)
+If you forgot to request, please contact your manager.
+```
+
+**Business Impact:**
+- Reduces OT fraud risk
+- Improves planning and resource allocation
+- Maintains clear audit trail for compliance
+- Enforces proactive communication between employees and managers
+
+---
+
+### 10.4 OT Approval Workflow
+
+**Who Can Approve:**
+- **MANAGER:** Can approve OT requests from users in same team only (RBAC)
+- **ADMIN:** Can approve any OT request company-wide
+
+**Approval Effect:**
+```javascript
+// When OT_REQUEST approved:
+attendance.otApproved = true  // for that date
+
+// If attendance doesn't exist yet (user not checked in):
+// - Flag stored in Request record
+// - Applied automatically on check-in
+```
+
+**State Transitions:**
+```
+PENDING → APPROVED (manager/admin action)
+PENDING → REJECTED (manager/admin action)
+PENDING → CANCELLED (employee action, before approval only)
+```
+
+**No Rejection Reason Required (G2):**
+- Rejection doesn't require explanation
+- But recommended to communicate separately
+
+---
+
+### 10.5 OT Calculation Rules (STRICT - A1)
+
+**Core Rule:** OT only calculated if `attendance.otApproved = true`
+
+#### Scenario A: WITH OT Approval ✅
+```
+date: 2026-02-05
+checkInAt: 08:30
+checkOutAt: 20:00
+otApproved: true
+
+Calculation:
+- workMinutes = 08:30 to 17:30 = 480 minutes (minus lunch 60)
+- otMinutes = 17:31 to 20:00 = 149 minutes
+- Total working time = 480 + 149 = 629 minutes
+```
+
+#### Scenario B: WITHOUT OT Approval ❌
+```
+date: 2026-02-05
+checkInAt: 08:30
+checkOutAt: 20:00
+otApproved: false
+
+Calculation:
+- workMinutes = 08:30 to 17:30 = 480 minutes (CAPPED at 17:30)
+- otMinutes = 0 (no approval)
+- Time 17:30-20:00: LOST (not counted, not paid)
+- Total working time = 480 minutes only
+```
+
+**Implementation:**
+```javascript
+// In computeWorkMinutes()
+if (!otApproved) {
+  const endOfShift = createTimeInGMT7(dateKey, 17, 30);
+  effectiveCheckOut = min(checkOutAt, endOfShift);
+  // Work capped at 17:30
+}
+
+// In computeOtMinutes()
+if (!otApproved) {
+  return 0;  // No OT without approval
+}
+```
+
+**Key Points:**
+- A1 (STRICT): No grace period - về sau 17:30 phải có approval
+- B2: Actual OT = calculated at checkout (not estimated time from request)
+- C1: Automatic calculation based on actual checkout time
+
+---
+
+### 10.6 Weekend/Holiday Exception (F1)
+
+**Special Case:** Weekend/holiday OT does NOT require OT_REQUEST.
+
+**Rationale:**
+- Working on weekend/holiday = exceptional case
+- Usually pre-planned and manager-aware
+- Simplified workflow for special circumstances
+
+**Behavior:**
+```javascript
+// Weekend/Holiday logic (unchanged from v2.5)
+if (isWeekend(dateKey) || holidayDates.has(dateKey)) {
+  // Force otApproved=true for calculation purposes
+  workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut, true);
+  otMinutes = computeOtMinutes(dateKey, checkOut, true);
+  // No OT_REQUEST needed
+}
+```
+
+**This applies to:**
+- Saturday/Sunday
+- Public holidays (from Holiday model)
+- Company-specific holidays
+
+---
+
+### 10.7 OT Cancellation Rules (C2)
+
+**Who Can Cancel:**
+- Request owner (userId match) only
+- Cannot cancel others' requests
+
+**When Can Cancel:**
+- Status = PENDING only
+- Cannot cancel APPROVED or REJECTED requests
+
+**Effect:**
+- Request deleted from database
+- If `otApproved` already set on attendance:
+  - Flag remains (doesn't auto-revert)
+  - Admin must manually adjust if needed
+
+**Endpoint:**
+```
+DELETE /api/requests/:id
+- Returns 200 if successful
+- Returns 404 if not found or already processed
+```
+
+---
+
+### 10.8 Check-In Integration
+
+**Automatic otApproved Detection:**
+
+When user checks in, system checks for approved OT request:
+```javascript
+// In checkIn()
+const approvedOtRequest = await Request.findOne({
+  userId,
+  type: 'OT_REQUEST',
+  date: todayKey,
+  status: 'APPROVED'
+});
+
+if (approvedOtRequest) {
+  attendance.otApproved = true;  // Auto-set on check-in
+}
+```
+
+**Scenarios:**
+
+1. **Request → Approve → Check-In:**
+   - OT request created & approved
+   - User checks in later
+   - `otApproved` set automatically ✅
+
+2. **Check-In → Request → Approve:**
+   - User checks in first
+   - Creates OT request
+   - Manager approves
+   - `otApproved` updated on attendance record ✅
+
+3. **No Request:**
+   - User checks in
+   - No OT request exists
+   - `otApproved` remains false
+   - Checkout capped at 17:30 ❌
+
+---
+
+### 10.9 Reporting Metrics (H2)
+
+**Monthly Report Enhancement:**
+
+Users now have 3 OT metrics:
+
+1. **totalOtMinutes:** All approved OT worked (paid OT)
+2. **approvedOtMinutes:** Same as total (for clarity)
+3. **unapprovedOtMinutes:** Time worked after 17:30 WITHOUT approval
+
+**Calculation:**
+```javascript
+for (const record of records) {
+  if (record.otApproved) {
+    approvedOtMinutes += computeOtMinutes(record.date, record.checkOutAt, true);
+  } else {
+    // Calculate potential OT (what would have been)
+    if (record.checkOutAt > endOfShift) {
+      unapprovedOtMinutes += computePotentialOtMinutes(record.date, record.checkOutAt);
+    }
+  }
+}
+```
+
+**Purpose:**
+- Track compliance (unapproved OT = potential policy violation)
+- Visibility for managers
+- Audit trail for HR
+
+**Example Report:**
+```json
+{
+  "userId": "123",
+  "name": "John Doe",
+  "totalOtMinutes": 450,        // Approved OT (paid)
+  "approvedOtMinutes": 450,     // Same as total
+  "unapprovedOtMinutes": 120    // Worked without approval (not paid)
+}
+```
+
+---
+
+### 10.10 Validation Summary Table
+
+| Rule | Field | Validation | Error Message |
+|------|-------|------------|---------------|
+| E2 | date | >= todayKey | "Cannot create OT request for past dates" |
+| I1 | estimatedEndTime | same calendar day as date | "Cross-midnight OT requires separate requests" |
+| - | estimatedEndTime | > 17:31 | "OT must start after 17:31" |
+| B1 | estimatedEndTime | >= 17:31 + 30 mins | "Minimum OT duration is 30 minutes" |
+| E2 | checkout | must not exist | "Cannot request OT after checkout" |
+| D1 | quota | < 31 pending/month | "Maximum 31 pending OT requests per month" |
+
+---
+
+### 10.11 Edge Cases & FAQs
+
+**Q: User works 17:30-18:30 without OT request. What happens?**
+- Work capped at 17:30
+- 17:30-18:30 time is LOST (not counted)
+- User should have requested OT beforehand
+
+**Q: OT request approved but user leaves at 18:00?**
+- OT calculated 17:31-18:00 = 29 minutes (less than minimum but still counted)
+- Request status remains APPROVED (no automatic update)
+
+**Q: Can request OT for next week?**
+- Yes (E1: advance notice allowed)
+- Common for planned deployments, projects
+
+**Q: What if 32nd OT request in a month?**
+- Error 400: "Maximum 31 pending OT requests per month reached"
+- Must wait for approval/rejection of existing requests
+
+**Q: Can admin force-set otApproved without request?**
+- No - must have OT_REQUEST record for audit trail
+- Ensures all OT is documented and approved
+
+**Q: User forgets to request OT, can request after checkout?**
+- No (E2: no retroactive requests)
+- Must be handled as exception by HR/manager manually
+
+---
+
+### 10.12 Priority & Conflict Resolution
+
+**Document Hierarchy:**
+1. This section (§10) - OT Request Rules (v2.6)
+2. Section §4.3 - otMinutes computation (updated for otApproved)
+3. Section §9 - Cross-midnight OT (existing rules)
+
+**In Case of Conflict:**
+- OT approval requirement (§10.5) OVERRIDES automatic calculation (§4.3)
+- Weekend/holiday exception (§10.6) takes precedence over approval requirement
+- Cross-midnight rules (§10.3) align with existing §9 structure
