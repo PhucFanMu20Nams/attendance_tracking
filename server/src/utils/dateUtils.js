@@ -14,6 +14,11 @@ export function getTodayDateKey() {
  * Critical: ensures date boundaries respect GMT+7, not server's local time.
  */
 export function getDateKey(date) {
+  // P2 Fix (Issue #1): Guard against Invalid Date to prevent RangeError crash
+  if (!(date instanceof Date) || isNaN(date.getTime())) {
+    return '';  // Return empty string for invalid dates (consistent with normalizeDateKey)
+  }
+  
   const dateStr = date.toLocaleDateString('en-CA', {
     timeZone: TIMEZONE,
     year: 'numeric',
@@ -49,7 +54,7 @@ export function isWeekend(dateKey) {
 
 /**
  * Get hour and minute components of a Date in GMT+7.
- * Used for: late check (08:45), early leave (17:30), OT (18:30), lunch (12:00-13:00).
+ * Used for: late check (08:45), early leave (17:30), OT (17:31), lunch (12:00-13:00).
  */
 export function getTimeInGMT7(date) {
   const timeStr = date.toLocaleTimeString('en-US', {
@@ -73,7 +78,7 @@ export function getMinutesDiff(startDate, endDate) {
 
 /**
  * Create a UTC Date representing a specific time on a given dateKey in GMT+7.
- * Used for computing reference times (08:45, 17:30, 18:30) for comparisons.
+ * Used for computing reference times (08:45, 17:30, 17:31) for comparisons.
  * Returns a Date object (UTC timestamp) that represents the moment "dateKey HH:mm GMT+7".
  */
 export function createTimeInGMT7(dateKey, hours, minutes) {
@@ -168,4 +173,70 @@ export function countWorkdays(startDate, endDate, holidayDates = new Set()) {
   }
 
   return workdayCount;
+}
+
+/**
+ * Check if time is after OT threshold (17:31 GMT+7)
+ * Used for OT request validation
+ * 
+ * @param {string} dateKey - Date in "YYYY-MM-DD" format
+ * @param {Date} time - Time to check
+ * @returns {boolean} True if time > 17:31
+ */
+export function isInOtPeriod(dateKey, time) {
+  // P2 Fix: Guard against invalid dateKey to prevent crash in createTimeInGMT7()
+  if (!dateKey || typeof dateKey !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return false;
+  }
+  // P2 Fix (Issue #4): Guard against Invalid Date to prevent unpredictable comparison
+  if (!(time instanceof Date) || isNaN(time.getTime())) {
+    return false;
+  }
+  
+  const otThreshold = createTimeInGMT7(dateKey, 17, 31);
+  return time > otThreshold;
+}
+
+/**
+ * Check if checkout exceeds end of shift (17:30 GMT+7)
+ * Used for unapproved OT tracking
+ * 
+ * @param {string} dateKey - Date in "YYYY-MM-DD" format
+ * @param {Date} checkOutAt - Checkout timestamp
+ * @returns {boolean} True if checkout > 17:30
+ */
+export function isAfterShiftEnd(dateKey, checkOutAt) {
+  // P2 Fix: Guard against invalid dateKey to prevent crash in createTimeInGMT7()
+  if (!dateKey || typeof dateKey !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return false;
+  }
+  // P2 Fix (Issue #4): Guard against Invalid Date to prevent unpredictable comparison
+  if (!(checkOutAt instanceof Date) || isNaN(checkOutAt.getTime())) {
+    return false;
+  }
+  
+  const endOfShift = createTimeInGMT7(dateKey, 17, 30);
+  return checkOutAt > endOfShift;
+}
+
+/**
+ * Calculate minutes between OT threshold and time
+ * Used for minimum validation (30 minutes)
+ * 
+ * @param {string} dateKey - Date in "YYYY-MM-DD" format
+ * @param {Date} estimatedEndTime - Estimated end time
+ * @returns {number} Minutes from 17:31 to estimatedEndTime
+ */
+export function getOtDuration(dateKey, estimatedEndTime) {
+  // P2 Fix: Guard against invalid dateKey to prevent NaN from createTimeInGMT7()
+  if (!dateKey || typeof dateKey !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    return 0;
+  }
+  // P2 Fix (Issue #3): Guard against Invalid Date to prevent NaN in OT calculations
+  if (!(estimatedEndTime instanceof Date) || isNaN(estimatedEndTime.getTime())) {
+    return 0;
+  }
+  
+  const otThreshold = createTimeInGMT7(dateKey, 17, 31);
+  return getMinutesDiff(otThreshold, estimatedEndTime);
 }
