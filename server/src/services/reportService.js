@@ -1,6 +1,6 @@
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
-import { computeAttendance } from '../utils/attendanceCompute.js';
+import { computeAttendance, computePotentialOtMinutes } from '../utils/attendanceCompute.js';
 
 /**
  * Get monthly report with summary per user.
@@ -32,7 +32,14 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
     }
 
     // Query users based on scope
-    const baseQuery = { isActive: true, deletedAt: null };
+    // PATCH: Use $or to handle legacy users without deletedAt field (consistent with attendanceService)
+    const baseQuery = {
+        isActive: true,
+        $or: [
+            { deletedAt: null },              // Migrated users (not deleted)
+            { deletedAt: { $exists: false } }  // Legacy users (no field yet)
+        ]
+    };
     const userQuery = scope === 'team'
         ? { ...baseQuery, teamId }
         : baseQuery;
@@ -85,7 +92,8 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
             totalWorkMinutes: computed.totalWorkMinutes,
             totalLateCount: computed.totalLateCount,
             totalOtMinutes: computed.totalOtMinutes,
-            approvedOtMinutes: computed.approvedOtMinutes
+            approvedOtMinutes: computed.approvedOtMinutes,
+            unapprovedOtMinutes: computed.unapprovedOtMinutes
         };
     });
 
@@ -94,26 +102,27 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
 
 /**
  * Compute monthly summary for a single user from their attendance records.
+ * H2 Requirement: Track approved OT vs unapproved OT separately.
  */
 function computeUserMonthlySummary(records, holidayDates) {
     let totalWorkMinutes = 0;
     let totalLateCount = 0;
-    let totalOtMinutes = 0;
     let approvedOtMinutes = 0;
+    let unapprovedOtMinutes = 0;
 
     for (const record of records) {
         const computed = computeAttendance(
             {
                 date: record.date,
                 checkInAt: record.checkInAt,
-                checkOutAt: record.checkOutAt
+                checkOutAt: record.checkOutAt,
+                otApproved: record.otApproved
             },
             holidayDates,
             new Set()  // Phase 3: Pass empty leaveDates (aggregates don't count leave days)
         );
 
         totalWorkMinutes += computed.workMinutes || 0;
-        totalOtMinutes += computed.otMinutes || 0;
 
         // Count late by lateMinutes, not status
         // This ensures WORKING and MISSING_CHECKOUT records are counted if late
@@ -121,16 +130,28 @@ function computeUserMonthlySummary(records, holidayDates) {
             totalLateCount += 1;
         }
 
-        // Track approved OT separately
-        if (record.otApproved && computed.otMinutes > 0) {
-            approvedOtMinutes += computed.otMinutes;
+        // H2: Track Approved vs Unapproved OT
+        if (record.otApproved) {
+            // Approved: use computed OT (already > 0 because otApproved = true)
+            approvedOtMinutes += computed.otMinutes || 0;
+        } else {
+            // Unapproved: calculate potential OT (what they WOULD have earned)
+            // Defensive: Require valid check-in to prevent counting bad data
+            if (record.checkOutAt && record.checkInAt) {
+                const potentialOt = computePotentialOtMinutes(record.date, record.checkOutAt);
+                unapprovedOtMinutes += potentialOt;
+            }
         }
     }
+
+    // Total OT = only approved OT counts
+    const totalOtMinutes = approvedOtMinutes;
 
     return {
         totalWorkMinutes,
         totalLateCount,
         totalOtMinutes,
-        approvedOtMinutes
+        approvedOtMinutes,
+        unapprovedOtMinutes
     };
 }

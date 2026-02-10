@@ -1,13 +1,14 @@
 import Attendance from '../models/Attendance.js';
 import User from '../models/User.js';
 import AuditLog from '../models/AuditLog.js';
+import Request from '../models/Request.js';
 import { getTodayDateKey, isWeekend } from '../utils/dateUtils.js';
 import { computeAttendance } from '../utils/attendanceCompute.js';
 import { clampPage } from '../utils/pagination.js';
 import { getCheckoutGraceMs } from '../utils/graceConfig.js';
 
 /**
- * Check-in: Create or update today's attendance with checkInAt timestamp.
+ * Check-in: Create today's attendance with checkInAt timestamp.
  * Cross-midnight OT: Block if ANY open session exists (not just today).
  * Logs stale sessions (outside grace period) to AuditLog for admin review.
  * 
@@ -51,20 +52,13 @@ export const checkIn = async (userId) => {
   }
 
   // Create today's attendance (rely on unique constraint for duplicate detection)
-  // Fixed: Remove meaningless `checkInAt: null` filter that never matches due to required schema
+  let attendance;
   try {
-    const attendance = await Attendance.create({
+    attendance = await Attendance.create({
       userId,
       date: dateKey,
       checkInAt: new Date()
     });
-
-    return {
-      userId: attendance.userId,
-      date: attendance.date,
-      checkInAt: attendance.checkInAt,
-      checkOutAt: attendance.checkOutAt
-    };
   } catch (err) {
     // Unique constraint violation: user already checked in today
     if (err?.code === 11000) {
@@ -74,6 +68,33 @@ export const checkIn = async (userId) => {
     }
     throw err;
   }
+
+  // Phase 2.1 (OT_REQUEST): Auto-apply approved OT if exists
+  // Handles case where OT request was approved BEFORE check-in
+  // P1 Fix: Use $or to support legacy data (date vs checkInDate field)
+  const approvedOt = await Request.exists({
+    userId,
+    type: 'OT_REQUEST',
+    status: 'APPROVED',
+    $or: [{ date: dateKey }, { checkInDate: dateKey }]
+  });
+
+  if (approvedOt) {
+    // Set otApproved flag on attendance we just created
+    attendance = await Attendance.findByIdAndUpdate(
+      attendance._id,
+      { $set: { otApproved: true } },
+      { new: true }
+    );
+  }
+
+  return {
+    userId: attendance.userId,
+    date: attendance.date,
+    checkInAt: attendance.checkInAt,
+    checkOutAt: attendance.checkOutAt,
+    otApproved: !!attendance.otApproved
+  };
 };
 
 
@@ -207,7 +228,9 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
   const records = await Attendance.find({
     userId,
     date: { $regex: `^${month}` }
-  }).lean();
+  })
+  .select('date checkInAt checkOutAt otApproved')
+  .lean();
 
   // Build attendance lookup map for O(1) access
   const attendanceMap = new Map(records.map(r => [r.date, r]));
@@ -218,7 +241,8 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
     const record = attendanceMap.get(dateKey) || {
       date: dateKey,
       checkInAt: null,
-      checkOutAt: null
+      checkOutAt: null,
+      otApproved: false
     };
 
     // Compute status for this day (handles LEAVE, ABSENT, WEEKEND_OR_HOLIDAY, etc.)
@@ -226,7 +250,8 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
       {
         date: record.date,
         checkInAt: record.checkInAt,
-        checkOutAt: record.checkOutAt
+        checkOutAt: record.checkOutAt,
+        otApproved: record.otApproved
       },
       holidayDates,
       leaveDates
@@ -239,7 +264,8 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
       status: computed.status,
       lateMinutes: computed.lateMinutes,
       workMinutes: computed.workMinutes,
-      otMinutes: computed.otMinutes
+      otMinutes: computed.otMinutes,
+      otApproved: !!record.otApproved
     };
   });
 };
@@ -317,7 +343,7 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
     userId: { $in: userIds },
     date: todayKey
   })
-    .select('userId date checkInAt checkOutAt')
+    .select('userId date checkInAt checkOutAt otApproved')
     .lean();
 
   // Step 3: Map attendance to user in memory
@@ -345,7 +371,12 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
     // Priority 3: Has attendance record, compute status
     else {
       const computed = computeAttendance(
-        { date: todayKey, checkInAt: attendance.checkInAt, checkOutAt: attendance.checkOutAt },
+        { 
+          date: todayKey, 
+          checkInAt: attendance.checkInAt, 
+          checkOutAt: attendance.checkOutAt,
+          otApproved: attendance.otApproved 
+        },
         holidayDates,
         new Set()  // Phase 3: Pass empty leaveDates (today view doesn't show LEAVE)
       );

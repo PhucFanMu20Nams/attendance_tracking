@@ -1,6 +1,16 @@
 import mongoose from 'mongoose';
 
-const REQUEST_TYPES = ['ADJUST_TIME', 'LEAVE'];
+// Business timezone configuration (Asia/Ho_Chi_Minh = GMT+7)
+// WARNING: Changing this requires updating all date/time calculations across the system
+const BUSINESS_TZ_OFFSET_HOURS = 7;
+const BUSINESS_TZ_OFFSET_MS = BUSINESS_TZ_OFFSET_HOURS * 60 * 60 * 1000;
+
+// OT business rules (see docs/rules.md §10)
+const OT_START_TIME_HOURS = 17;  // 17:31 in 24h format
+const OT_START_TIME_MINUTES = 31;
+const OT_MIN_DURATION_MINUTES = 30;  // Minimum OT duration (B1 requirement)
+
+const REQUEST_TYPES = ['ADJUST_TIME', 'LEAVE', 'OT_REQUEST'];
 const REQUEST_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'];
 
 const requestSchema = new mongoose.Schema(
@@ -12,7 +22,9 @@ const requestSchema = new mongoose.Schema(
     },
     date: {
       type: String,
-      required: function () { return this.type === 'ADJUST_TIME'; },
+      required: function () { 
+        return this.type === 'ADJUST_TIME' || this.type === 'OT_REQUEST';
+      },
       default: null,
       match: /^\d{4}-\d{2}-\d{2}$/,
       // Backward compatibility: Auto-populated from checkInDate via pre-validate hook
@@ -65,9 +77,21 @@ const requestSchema = new mongoose.Schema(
       type: Number,
       default: null
     },
+    // NEW: OT Request fields
+    estimatedEndTime: {
+      type: Date,
+      default: null,
+      required: function() { return this.type === 'OT_REQUEST'; }
+    },
+    actualOtMinutes: {
+      type: Number,
+      default: null  // Filled after checkout for tracking
+    },
     reason: {
       type: String,
-      required: true,
+      required: function() {
+        return this.type === 'OT_REQUEST';
+      },
       trim: true
     },
     status: {
@@ -88,9 +112,21 @@ const requestSchema = new mongoose.Schema(
 
 // P0 Fix: Auto-sync date <-> checkInDate for backward compatibility + validate cross-midnight
 // Ensures invariant: date === checkInDate for ADJUST_TIME (prevents approve/update bugs)
-// Mongoose 9.x: Use async function instead of callback-based next()
-requestSchema.pre('validate', async function() {
+// P2 Fix: Removed async (no await operations)
+requestSchema.pre('validate', function() {
+  // ADJUST_TIME: Sync date <-> checkInDate + cross-midnight validation
   if (this.type === 'ADJUST_TIME') {
+    // P1 Fix: Clear OT_REQUEST-specific fields to prevent data pollution
+    // (symmetric with OT_REQUEST and LEAVE branches)
+    this.estimatedEndTime = null;
+    this.actualOtMinutes = null;
+    
+    // P1 Fix: Clear LEAVE-specific fields
+    this.leaveStartDate = null;
+    this.leaveEndDate = null;
+    this.leaveType = null;
+    this.leaveDaysCount = null;
+    
     // Sync date <-> checkInDate (bidirectional for safety)
     if (this.checkInDate && !this.date) {
       this.date = this.checkInDate;
@@ -110,23 +146,110 @@ requestSchema.pre('validate', async function() {
       this.invalidate('checkOutDate', 'checkOutDate must be >= checkInDate for cross-midnight requests');
     }
   }
+  
+  // OT_REQUEST: Validate + clear cross-contamination (P0-2 fix)
+  if (this.type === 'OT_REQUEST') {
+    // P0-2: Clear ADJUST_TIME-specific fields to prevent index pollution
+    this.checkInDate = null;
+    this.checkOutDate = null;
+    this.requestedCheckInAt = null;
+    this.requestedCheckOutAt = null;
+    
+    // P0-2: Clear LEAVE-specific fields
+    this.leaveStartDate = null;
+    this.leaveEndDate = null;
+    this.leaveType = null;
+    this.leaveDaysCount = null;
+    
+    // Required field validation
+    if (!this.date) {
+      this.invalidate('date', 'Date is required for OT_REQUEST');
+    }
+    
+    if (!this.estimatedEndTime) {
+      this.invalidate('estimatedEndTime', 'estimatedEndTime is required for OT_REQUEST');
+    }
+    
+    // P0 Fix: Guard against Invalid Date to prevent crash in getTime()/toISOString()
+    // Mongoose can cast bad input (e.g., "abc") to Invalid Date object
+    if (this.estimatedEndTime && (!(this.estimatedEndTime instanceof Date) || isNaN(this.estimatedEndTime.getTime()))) {
+      this.invalidate('estimatedEndTime', 'estimatedEndTime is invalid');
+      return; // Stop validation to prevent crash in subsequent code
+    }
+    
+    // P1-1: Validate estimatedEndTime belongs to same date (GMT+7)
+    if (this.date && this.estimatedEndTime) {
+      // Convert UTC timestamp to business timezone date key
+      const estDate = new Date(this.estimatedEndTime.getTime() + BUSINESS_TZ_OFFSET_MS);
+      const estDateKey = estDate.toISOString().slice(0, 10);
+      
+      if (estDateKey !== this.date) {
+        this.invalidate(
+          'estimatedEndTime',
+          `estimatedEndTime must belong to date ${this.date} (GMT+${BUSINESS_TZ_OFFSET_HOURS})`
+        );
+      }
+      
+      // P1-2: Validate OT business rules (B1 requirement from docs/rules.md §10.10)
+      // OT must start after 17:31 and be at least 30 minutes
+      const estTime = new Date(this.estimatedEndTime.getTime() + BUSINESS_TZ_OFFSET_MS);
+      const estHours = estTime.getUTCHours();
+      const estMinutes = estTime.getUTCMinutes();
+      
+      // Convert to minutes since midnight for easier comparison
+      const estTotalMinutes = estHours * 60 + estMinutes;
+      const otStartMinutes = OT_START_TIME_HOURS * 60 + OT_START_TIME_MINUTES;  // 17:31 = 1051 min
+      const minOtEndMinutes = otStartMinutes + OT_MIN_DURATION_MINUTES;  // 17:31 + 30 = 18:01 = 1081 min
+      
+      if (estTotalMinutes < minOtEndMinutes) {
+        this.invalidate(
+          'estimatedEndTime',
+          `OT must end at least ${OT_MIN_DURATION_MINUTES} minutes after ${OT_START_TIME_HOURS}:${OT_START_TIME_MINUTES.toString().padStart(2, '0')} ` +
+          `(minimum end time: ${Math.floor(minOtEndMinutes/60)}:${(minOtEndMinutes%60).toString().padStart(2, '0')})`
+        );
+      }
+    }
+  }
+  
+  // P0-2: LEAVE type - clear cross-contamination fields
+  if (this.type === 'LEAVE') {
+    // Clear ADJUST_TIME-specific fields
+    this.date = null;
+    this.checkInDate = null;
+    this.checkOutDate = null;
+    this.requestedCheckInAt = null;
+    this.requestedCheckOutAt = null;
+    
+    // Clear OT_REQUEST-specific fields
+    this.estimatedEndTime = null;
+    this.actualOtMinutes = null;
+    
+    // P1-2: LEAVE date range validation
+    if (this.leaveStartDate && this.leaveEndDate) {
+      if (this.leaveEndDate < this.leaveStartDate) {
+        this.invalidate(
+          'leaveEndDate',
+          'leaveEndDate must be >= leaveStartDate'
+        );
+      }
+    }
+  }
 });
 
 // Efficient querying for user's requests and status filtering
 requestSchema.index({ userId: 1, status: 1 });
-requestSchema.index({ status: 1 });
 
 // P2 Fix: Unique index now uses checkInDate (primary key for cross-midnight)
 // Prevents duplicate PENDING requests for same (userId, checkInDate, type)
 // Guards against race conditions + ensures data integrity with new schema
+// P0-3 Fix: Removed $type filter (field invariant ensures checkInDate exists for ADJUST_TIME)
 requestSchema.index(
   { userId: 1, checkInDate: 1, type: 1 },
   {
     unique: true,
     partialFilterExpression: { 
       status: 'PENDING', 
-      type: 'ADJUST_TIME',
-      checkInDate: { $type: 'string' }  // Only enforce when checkInDate exists
+      type: 'ADJUST_TIME'
     }
   }
 );
@@ -137,13 +260,29 @@ requestSchema.index({ userId: 1, type: 1, status: 1 });
 // P2 Fix: Cross-midnight indexes with userId prefix + partial filter
 // Most queries are user-scoped (GET /requests/me, manager approval by team)
 // Partial filter prevents index bloat from LEAVE docs (checkInDate/checkOutDate = null)
+// P0-3 Fix: Removed $type filters (MongoDB naturally excludes null values from indexes)
 requestSchema.index(
   { userId: 1, checkInDate: 1, status: 1 },
-  { partialFilterExpression: { type: 'ADJUST_TIME', checkInDate: { $type: 'string' } } }
+  { partialFilterExpression: { type: 'ADJUST_TIME' } }
 );
 requestSchema.index(
   { userId: 1, checkOutDate: 1, status: 1 },
-  { partialFilterExpression: { type: 'ADJUST_TIME', checkOutDate: { $type: 'string' } } }
+  { partialFilterExpression: { type: 'ADJUST_TIME' } }
+);
+
+// NEW: Unique index for OT_REQUEST
+// Ensures max 1 PENDING OT request per (userId, date)
+// Enables auto-extend feature (D2 requirement)
+// P0-3 Fix: Removed $type filter (date field is always string when OT_REQUEST)
+requestSchema.index(
+  { userId: 1, date: 1, type: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { 
+      status: 'PENDING', 
+      type: 'OT_REQUEST'
+    }
+  }
 );
 
 export { REQUEST_TYPES, REQUEST_STATUSES };

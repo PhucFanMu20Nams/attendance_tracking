@@ -13,11 +13,20 @@ export const loginUser = async (identifier, password) => {
   const normalizedIdentifier = identifier.toLowerCase().trim();
 
   const user = await User.findOne({
-    $or: [
-      { email: normalizedIdentifier },
-      { username: normalizedIdentifier }
-    ],
-    deletedAt: null  // Block soft-deleted users from login
+    $and: [
+      {
+        $or: [
+          { email: normalizedIdentifier },
+          { username: normalizedIdentifier }
+        ]
+      },
+      {
+        $or: [
+          { deletedAt: null },
+          { deletedAt: { $exists: false } }
+        ]
+      }
+    ]
   });
 
   // SECURITY: Same error message prevents user enumeration attacks
@@ -67,7 +76,13 @@ export const loginUser = async (identifier, password) => {
  * @returns {Promise<Object>} User profile
  */
 export const getCurrentUser = async (userId) => {
-  const user = await User.findById(userId).select('-passwordHash');
+  const user = await User.findOne({
+    _id: userId,
+    $or: [
+      { deletedAt: null },
+      { deletedAt: { $exists: false } }
+    ]
+  }).select('-passwordHash');
 
   if (!user) {
     const error = new Error('User not found');

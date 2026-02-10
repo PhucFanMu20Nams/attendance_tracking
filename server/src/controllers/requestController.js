@@ -30,24 +30,38 @@ export const createRequest = async (req, res) => {
       leaveStartDate,
       leaveEndDate,
       leaveType,
+      estimatedEndTime,
       reason 
     } = req.body;
 
     // Validate type enum (fail-fast)
-    if (type && !['ADJUST_TIME', 'LEAVE'].includes(type)) {
+    if (type && !['ADJUST_TIME', 'LEAVE', 'OT_REQUEST'].includes(type)) {
       return res.status(400).json({ 
-        message: 'Invalid request type. Must be ADJUST_TIME or LEAVE' 
+        message: 'Invalid request type. Must be ADJUST_TIME, LEAVE, or OT_REQUEST' 
       });
     }
 
-    // Validate reason (common for both types)
+    // Validate reason (common for all types)
     if (!reason || typeof reason !== 'string' || reason.trim().length === 0) {
       return res.status(400).json({ message: 'Reason is required' });
     }
 
     let request;
     
-    if (type === 'LEAVE') {
+    if (type === 'OT_REQUEST') {
+      // Validate OT_REQUEST-specific fields
+      if (!date || !estimatedEndTime) {
+        return res.status(400).json({ 
+          message: 'date and estimatedEndTime are required for OT requests' 
+        });
+      }
+      
+      request = await requestService.createOtRequest(userId, {
+        date,
+        estimatedEndTime,
+        reason
+      });
+    } else if (type === 'LEAVE') {
       // Validate LEAVE-specific fields
       if (!leaveStartDate || !leaveEndDate) {
         return res.status(400).json({ 
@@ -70,13 +84,13 @@ export const createRequest = async (req, res) => {
         });
       }
       
-      request = await requestService.createRequest(
-        userId,
+      request = await requestService.createRequest(userId, {
+        type: 'ADJUST_TIME',
         date,
-        requestedCheckInAt || null,
-        requestedCheckOutAt || null,
+        requestedCheckInAt: requestedCheckInAt || null,
+        requestedCheckOutAt: requestedCheckOutAt || null,
         reason
-      );
+      });
     }
 
     return res.status(201).json({ request });
@@ -215,6 +229,34 @@ export const rejectRequest = async (req, res) => {
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
       message: error.message || 'Failed to reject request'
+    });
+  }
+};
+
+/**
+ * DELETE /api/requests/:id
+ * Cancel OT request (only PENDING, owner only)
+ * 
+ * Roles: EMPLOYEE | MANAGER | ADMIN (own requests only)
+ */
+export const cancelRequest = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const requestId = req.params.id;
+    
+    if (!requestId) {
+      return res.status(400).json({ message: 'Request ID is required' });
+    }
+    
+    // Call service (handles ownership check + PENDING status check)
+    // Note: service expects (userId, requestId) order
+    const result = await requestService.cancelOtRequest(userId, requestId);
+    
+    return res.status(200).json(result);
+  } catch (error) {
+    const statusCode = error.statusCode || 500;
+    return res.status(statusCode).json({ 
+      message: error.message || 'Failed to cancel request' 
     });
   }
 };

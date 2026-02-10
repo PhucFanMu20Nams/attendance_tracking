@@ -40,7 +40,14 @@ export const getTeamTimesheet = async (teamId, month, holidayDates = new Set()) 
         throw error;
     }
 
-    const users = await User.find({ teamId, isActive: true, deletedAt: null })
+    const users = await User.find({
+        teamId,
+        isActive: true,
+        $or: [
+            { deletedAt: null },
+            { deletedAt: { $exists: false } }
+        ]
+    })
         .select('_id name employeeCode')
         .sort({ employeeCode: 1 })
         .lean();
@@ -63,7 +70,13 @@ export const getCompanyTimesheet = async (month, holidayDates = new Set()) => {
         throw error;
     }
 
-    const users = await User.find({ isActive: true, deletedAt: null })
+    const users = await User.find({
+        isActive: true,
+        $or: [
+            { deletedAt: null },
+            { deletedAt: { $exists: false } }
+        ]
+    })
         .select('_id name employeeCode')
         .sort({ employeeCode: 1 })
         .lean();
@@ -91,7 +104,7 @@ async function buildTimesheetMatrix(users, month, holidayDates) {
         userId: { $in: userIds },
         date: { $gte: monthStart, $lte: monthEnd }
     })
-        .select('userId date checkInAt checkOutAt')
+        .select('userId date checkInAt checkOutAt otApproved')
         .lean();
 
     // Group attendance by "userId_date" for O(1) lookup
@@ -206,7 +219,8 @@ function computeCellStatus(dateKey, attendance, holidayDates, leaveDates, todayD
         {
             date: dateKey,
             checkInAt: attendance.checkInAt,
-            checkOutAt: attendance.checkOutAt
+            checkOutAt: attendance.checkOutAt,
+            otApproved: !!attendance.otApproved
         },
         holidayDates,
         leaveDates  // Phase 3: Pass leaveDates

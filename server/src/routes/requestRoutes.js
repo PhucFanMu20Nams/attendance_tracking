@@ -14,4 +14,7 @@ router.get('/pending', authenticate, authorize('MANAGER', 'ADMIN'), requestContr
 router.post('/:id/approve', authenticate, authorize('MANAGER', 'ADMIN'), requestController.approveRequest);
 router.post('/:id/reject', authenticate, authorize('MANAGER', 'ADMIN'), requestController.rejectRequest);
 
+// DELETE /api/requests/:id - Cancel OT request (authenticated users only, own requests)
+router.delete('/:id', authenticate, requestController.cancelRequest);
+
 export default router;

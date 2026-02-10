@@ -3,12 +3,16 @@ import Request from '../models/Request.js';
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
 import Holiday from '../models/Holiday.js';
-import { getDateKey, getDateRange, countWorkdays, isWeekend } from '../utils/dateUtils.js';
+import { getDateKey, getDateRange, countWorkdays, isWeekend, getTodayDateKey, isInOtPeriod, getOtDuration } from '../utils/dateUtils.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 import {
   getCheckoutGraceMs, getCheckoutGraceHours,
   getAdjustRequestMaxMs, getAdjustRequestMaxDays
 } from '../utils/graceConfig.js';
+import { 
+  isReplicaSetAvailable, 
+  getTransactionOptions 
+} from '../config/database.js';
 
 /**
  * Validate and parse a date value.
@@ -68,7 +72,7 @@ const assertHasTzIfString = (value, fieldName) => {
  * @param {string} reason - Reason for the request
  * @returns {Promise<Object>} Created request
  */
-export const createRequest = async (userId, date, requestedCheckInAt, requestedCheckOutAt, reason) => {
+export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, requestedCheckOutAt, reason) => {
   // Validation 0: userId must be valid ObjectId (P1 defensive fix for consistency)
   if (!mongoose.Types.ObjectId.isValid(userId)) {
     const error = new Error('Invalid userId');
@@ -124,6 +128,15 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   if (checkIn) {
     // Bug #1 Fix: Validate timezone BEFORE parsing to provide clear error message
     assertHasTzIfString(requestedCheckInAt, 'requestedCheckInAt');
+
+    // P0-2 Fix: Validate checkIn not in future (tolerance: 1 minute for clock skew)
+    const now = Date.now();
+    const tolerance = 60 * 1000; // 1 minute
+    if (checkIn.getTime() > now + tolerance) {
+      const error = new Error('requestedCheckInAt cannot be in the future');
+      error.statusCode = 400;
+      throw error;
+    }
 
     const checkInDateKey = getDateKey(checkIn);
     if (checkInDateKey !== date) {
@@ -261,11 +274,15 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
   }
 
   // Prevent duplicate PENDING requests (P2 Fix: use checkInDate to match unique index)
+  // P1-2 Fix: Add $or to support legacy data (date vs checkInDate field)
   const existingPendingRequest = await Request.findOne({
     userId,
-    checkInDate: computedCheckInDate,
     type: 'ADJUST_TIME',
-    status: 'PENDING'
+    status: 'PENDING',
+    $or: [
+      { checkInDate: computedCheckInDate },
+      { date: computedCheckInDate }  // Legacy support
+    ]
   }).select('_id');
 
   if (existingPendingRequest) {
@@ -299,6 +316,33 @@ export const createRequest = async (userId, date, requestedCheckInAt, requestedC
     }
     throw err;
   }
+};
+
+/**
+ * Router function: Create request of any type
+ * Delegates to type-specific handlers based on requestData.type
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {Object} requestData - Request data with type field
+ * @returns {Promise<Object>} Created request
+ */
+export const createRequest = async (userId, requestData) => {
+  const { type } = requestData;
+  
+  // Route to specific handler based on type
+  if (type === 'OT_REQUEST') {
+    return await createOtRequest(userId, requestData);
+  }
+  
+  if (type === 'LEAVE') {
+    // Extract LEAVE-specific fields
+    const { leaveStartDate, leaveEndDate, leaveType, reason } = requestData;
+    return await createLeaveRequest(userId, leaveStartDate, leaveEndDate, leaveType, reason);
+  }
+  
+  // Default: ADJUST_TIME
+  const { date, requestedCheckInAt, requestedCheckOutAt, reason } = requestData;
+  return await createAdjustTimeRequest(userId, date, requestedCheckInAt, requestedCheckOutAt, reason);
 };
 
 /**
@@ -426,25 +470,20 @@ export const getPendingRequests = async (user, options = {}) => {
 };
 
 /**
- * Approve a request and update/create attendance record.
- * Uses atomic findOneAndUpdate to prevent race conditions.
- * RBAC: MANAGER can only approve requests from users in the same team.
- *       ADMIN can approve any request across the company.
+ * Core approval logic (extracted for transaction/non-transaction paths)
+ * 
+ * This function contains the business logic for approving a request.
+ * It is transaction-agnostic and can be called with or without a session.
  * 
  * @param {string} requestId - Request's ObjectId
  * @param {Object} approver - Approver user object (req.user)
+ * @param {Object|null} session - MongoDB session for transaction (null for standalone)
  * @returns {Promise<Object>} Updated request
  */
-export const approveRequest = async (requestId, approver) => {
-  if (!mongoose.Types.ObjectId.isValid(requestId)) {
-    const error = new Error('Invalid request ID');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // First, fetch the request to validate RBAC and business rules
-  const existingRequest = await Request.findById(requestId)
-    .populate('userId', 'teamId');
+async function approveRequestCore(requestId, approver, session) {
+  // STEP 1: Fetch request (with or without session)
+  const query = Request.findById(requestId).populate('userId', 'teamId');
+  const existingRequest = session ? await query.session(session) : await query;
 
   if (!existingRequest) {
     const error = new Error('Request not found');
@@ -452,7 +491,7 @@ export const approveRequest = async (requestId, approver) => {
     throw error;
   }
 
-  // RBAC check must happen BEFORE the atomic update
+  // STEP 2: RBAC check (before atomic update)
   if (approver.role === 'MANAGER') {
     if (!approver.teamId) {
       const error = new Error('Manager must be assigned to a team');
@@ -473,10 +512,9 @@ export const approveRequest = async (requestId, approver) => {
     }
   }
 
-  // Step 6: Revalidate ADJUST_TIME requests with 2-rule validation (defense-in-depth)
-  // Cross-midnight OT: Replace cross-day validation with anchor-based validation
+  // STEP 3: Revalidate ADJUST_TIME requests (defense-in-depth)
   if (existingRequest.type === 'ADJUST_TIME') {
-    // Validate checkIn is on request.date (cross-midnight: only checkIn must match date)
+    // Validate checkIn is on request.date
     if (existingRequest.requestedCheckInAt) {
       const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
       if (checkInDateKey !== existingRequest.date) {
@@ -485,9 +523,6 @@ export const approveRequest = async (requestId, approver) => {
         throw error;
       }
     }
-
-    // Bug #3 Fix: Validate cross-midnight OT with 2-rule validation (defense-in-depth)
-    // Extract anchor determination to apply Rule 2 for ALL requests (checkIn-only + checkOut-only)
 
     // Load grace config
     const sessionGraceMs = getCheckoutGraceMs();
@@ -500,25 +535,26 @@ export const approveRequest = async (requestId, approver) => {
     if (existingRequest.requestedCheckInAt) {
       anchorTime = new Date(existingRequest.requestedCheckInAt);
     } else {
-      // Fetch existing attendance to get checkIn
-      // Critical: Use _id explicitly - userId is populated User object
-      const att = await Attendance.findOne({
+      // Fetch attendance (with or without session)
+      // P1-3 Fix: Only match if checkInAt exists and not null
+      const attQuery = Attendance.findOne({
         userId: existingRequest.userId._id,
-        date: existingRequest.date
+        date: existingRequest.date,
+        checkInAt: { $exists: true, $ne: null }
       }).select('checkInAt').lean();
+      
+      const att = session ? await attQuery.session(session) : await attQuery;
       anchorTime = att?.checkInAt ? new Date(att.checkInAt) : null;
     }
 
-    // Bug #2 Fix: Require anchor for ALL ADJUST_TIME requests (defense-in-depth)
-    // Prevents approving corrupt requests (missing checkIn in both request and attendance)
+    // Require anchor for ALL ADJUST_TIME requests (defense-in-depth)
     if (!anchorTime) {
       const error = new Error('Cannot approve: missing check-in reference');
       error.statusCode = 400;
       throw error;
     }
 
-    // Rule 2: Submission window validation (applies to ALL requests)
-    // Now runs unconditionally since anchorTime is guaranteed to exist
+    // Rule 2: Submission window validation
     const requestCreated = new Date(existingRequest.createdAt);
     const submissionDelay = requestCreated - anchorTime;
     if (submissionDelay > submitMaxMs) {
@@ -529,12 +565,11 @@ export const approveRequest = async (requestId, approver) => {
       throw error;
     }
 
-    // Rule 1: Session length validation (only for checkOut requests)
+    // Rule 1: Session length (checkOut only)
     if (existingRequest.requestedCheckOutAt) {
       const checkOut = new Date(existingRequest.requestedCheckOutAt);
-
-      // Session length validation
       const sessionLength = checkOut - anchorTime;
+      
       if (sessionLength > sessionGraceMs) {
         const error = new Error(
           `Request invalid: session exceeds ${sessionGraceHours}h limit`
@@ -543,7 +578,6 @@ export const approveRequest = async (requestId, approver) => {
         throw error;
       }
 
-      // Basic sanity: checkOut must be after checkIn
       if (checkOut <= anchorTime) {
         const error = new Error('Request invalid: checkOut must be after check-in');
         error.statusCode = 400;
@@ -552,11 +586,11 @@ export const approveRequest = async (requestId, approver) => {
     }
   }
 
-  // Atomic update: Only succeeds if status is still PENDING (prevents race condition)
-  const updatedRequest = await Request.findOneAndUpdate(
+  // STEP 4: Atomic update Request status
+  const updateQuery = Request.findOneAndUpdate(
     {
       _id: requestId,
-      status: 'PENDING'  // Condition: must be PENDING to update
+      status: 'PENDING'
     },
     {
       $set: {
@@ -568,20 +602,42 @@ export const approveRequest = async (requestId, approver) => {
     { new: true }
   ).populate('userId', 'teamId');
 
-  // If no document was updated, it means status was not PENDING (race condition lost)
+  const updatedRequest = session ? await updateQuery.session(session) : await updateQuery;
+
+  // Race condition check (status already changed)
   if (!updatedRequest) {
-    // Re-fetch to get current status for better error message
-    const currentRequest = await Request.findById(requestId);
+    const checkQuery = Request.findById(requestId);
+    const currentRequest = session ? await checkQuery.session(session) : await checkQuery;
     const currentStatus = currentRequest ? currentRequest.status.toLowerCase() : 'unknown';
     const error = new Error(`Request already ${currentStatus}`);
     error.statusCode = 409;
     throw error;
   }
 
-  // Update or create attendance ONLY for ADJUST_TIME requests
-  // LEAVE requests don't create attendance records
+  // STEP 5: Type-specific post-approval updates
+  
+  // OT_REQUEST: Set otApproved flag
+  if (updatedRequest.type === 'OT_REQUEST') {
+    const otQuery = Attendance.findOneAndUpdate(
+      { 
+        userId: updatedRequest.userId._id,
+        date: updatedRequest.date 
+      },
+      { 
+        $set: { otApproved: true } 
+      },
+      { upsert: false }
+    );
+    
+    if (session) {
+      await otQuery.session(session);
+    } else {
+      await otQuery;
+    }
+  }
+  
+  // ADJUST_TIME: Update/create attendance
   if (updatedRequest.type === 'ADJUST_TIME') {
-    // Validate: Block approve for weekend/holiday (defense-in-depth)
     const requestDate = updatedRequest.date;
     const month = requestDate.substring(0, 7);
     const holidayDates = await getHolidayDatesForMonth(month);
@@ -592,32 +648,66 @@ export const approveRequest = async (requestId, approver) => {
       throw error;
     }
 
-    await updateAttendanceFromRequest(updatedRequest);
+    // Call refactored function with session
+    await updateAttendanceFromRequest(updatedRequest, session);
   }
 
   return updatedRequest;
-};
+}
 
 /**
- * Reject a request.
- * Uses atomic findOneAndUpdate to prevent race conditions.
- * RBAC: MANAGER can only reject requests from users in the same team.
- *       ADMIN can reject any request across the company.
+ * Approve a request (transaction-safe wrapper)
+ * P0-1 Fix: Support both replica set (with transactions) and standalone MongoDB.
+ * 
+ * RBAC: MANAGER can only approve requests from users in the same team.
+ *       ADMIN can approve any request across the company.
  * 
  * @param {string} requestId - Request's ObjectId
  * @param {Object} approver - Approver user object (req.user)
  * @returns {Promise<Object>} Updated request
  */
-export const rejectRequest = async (requestId, approver) => {
+export const approveRequest = async (requestId, approver) => {
+  // Validate request ID format
   if (!mongoose.Types.ObjectId.isValid(requestId)) {
     const error = new Error('Invalid request ID');
     error.statusCode = 400;
     throw error;
   }
 
-  // First, fetch the request to validate RBAC
-  const existingRequest = await Request.findById(requestId)
-    .populate('userId', 'teamId');
+  // PATH A: Replica Set → Use transaction for atomicity
+  if (isReplicaSetAvailable()) {
+    const session = await mongoose.startSession();
+    try {
+      const result = await session.withTransaction(async () => {
+        return await approveRequestCore(requestId, approver, session);
+      }, getTransactionOptions());
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
+  
+  // PATH B: Standalone → Direct execution (no transaction)
+  else {
+    return await approveRequestCore(requestId, approver, null);
+  }
+};
+
+/**
+ * Core rejection logic (extracted for transaction/non-transaction paths)
+ * 
+ * This function contains the business logic for rejecting a request.
+ * It is transaction-agnostic and can be called with or without a session.
+ * 
+ * @param {string} requestId - Request's ObjectId
+ * @param {Object} rejector - Rejector user object (req.user)
+ * @param {Object|null} session - MongoDB session for transaction (null for standalone)
+ * @returns {Promise<Object>} Updated request
+ */
+async function rejectRequestCore(requestId, rejector, session) {
+  // STEP 1: Fetch request (with or without session)
+  const query = Request.findById(requestId).populate('userId', 'teamId');
+  const existingRequest = session ? await query.session(session) : await query;
 
   if (!existingRequest) {
     const error = new Error('Request not found');
@@ -625,9 +715,9 @@ export const rejectRequest = async (requestId, approver) => {
     throw error;
   }
 
-  // RBAC check must happen BEFORE the atomic update
-  if (approver.role === 'MANAGER') {
-    if (!approver.teamId) {
+  // STEP 2: RBAC check
+  if (rejector.role === 'MANAGER') {
+    if (!rejector.teamId) {
       const error = new Error('Manager must be assigned to a team');
       error.statusCode = 403;
       throw error;
@@ -639,33 +729,34 @@ export const rejectRequest = async (requestId, approver) => {
       throw error;
     }
 
-    if (!approver.teamId.equals(existingRequest.userId.teamId)) {
+    if (!rejector.teamId.equals(existingRequest.userId.teamId)) {
       const error = new Error('You can only reject requests from your team');
       error.statusCode = 403;
       throw error;
     }
   }
 
-  // Atomic update: Only succeeds if status is still PENDING (prevents race condition)
-  const updatedRequest = await Request.findOneAndUpdate(
+  // STEP 3: Atomic update
+  const updateQuery = Request.findOneAndUpdate(
     {
       _id: requestId,
-      status: 'PENDING'  // Condition: must be PENDING to update
+      status: 'PENDING'
     },
     {
       $set: {
         status: 'REJECTED',
-        approvedBy: approver._id,
+        approvedBy: rejector._id,
         approvedAt: new Date()
       }
     },
     { new: true }
   ).populate('userId', 'name employeeCode email teamId');
 
-  // If no document was updated, it means status was not PENDING (race condition lost)
+  const updatedRequest = session ? await updateQuery.session(session) : await updateQuery;
+
   if (!updatedRequest) {
-    // Re-fetch to get current status for better error message
-    const currentRequest = await Request.findById(requestId);
+    const checkQuery = Request.findById(requestId);
+    const currentRequest = session ? await checkQuery.session(session) : await checkQuery;
     const currentStatus = currentRequest ? currentRequest.status.toLowerCase() : 'unknown';
     const error = new Error(`Request already ${currentStatus}`);
     error.statusCode = 409;
@@ -673,17 +764,62 @@ export const rejectRequest = async (requestId, approver) => {
   }
 
   return updatedRequest;
+}
+
+/**
+ * Reject a request (transaction-safe wrapper)
+ * P0-1 Fix: Support both replica set (with transactions) and standalone MongoDB.
+ * 
+ * RBAC: MANAGER can only reject requests from users in the same team.
+ *       ADMIN can reject any request across the company.
+ * 
+ * @param {string} requestId - Request's ObjectId
+ * @param {Object} rejector - Rejector user object (req.user)
+ * @returns {Promise<Object>} Updated request
+ */
+export const rejectRequest = async (requestId, rejector) => {
+  // Validate request ID format
+  if (!mongoose.Types.ObjectId.isValid(requestId)) {
+    const error = new Error('Invalid request ID');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // PATH A: Replica Set → Use transaction
+  if (isReplicaSetAvailable()) {
+    const session = await mongoose.startSession();
+    try {
+      const result = await session.withTransaction(async () => {
+        return await rejectRequestCore(requestId, rejector, session);
+      }, getTransactionOptions());
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
+  
+  // PATH B: Standalone → Direct execution
+  else {
+    return await rejectRequestCore(requestId, rejector, null);
+  }
 };
 
 /**
  * Update or create attendance record based on approved request.
+ * P0-1 Fix: Added session parameter for transaction support.
  * Uses findOneAndUpdate with upsert to handle both create and update atomically.
  * Only updates the time fields that were requested.
+ * 
+ * Phase 2.1 (OT_REQUEST): Reconciles OT approval when upserting attendance.
+ * Prevents bug: OT approved before check-in → ADJUST_TIME creates attendance → otApproved lost.
+ * 
+ * @param {Object} request - Approved request object
+ * @param {Object} session - Mongoose session for transaction (optional)
  */
-async function updateAttendanceFromRequest(request) {
+async function updateAttendanceFromRequest(request, session = null) {
   const { userId, date, requestedCheckInAt, requestedCheckOutAt } = request;
 
-  // P1 Fix: Extract ObjectId safely (handle both populated and non-populated userId)
+  // Extract ObjectId safely (handle both populated and non-populated userId)
   const userObjectId = userId?._id ?? userId;
 
   const updateFields = {};
@@ -696,9 +832,30 @@ async function updateAttendanceFromRequest(request) {
     updateFields.checkOutAt = requestedCheckOutAt;
   }
 
+  // Phase 2.1 (OT_REQUEST): Reconcile OT approval when creating/updating attendance via ADJUST_TIME
+  // Handle case: OT approved BEFORE attendance exists, then ADJUST_TIME creates attendance
+  // P1 Fix: Use $or to support legacy data (date vs checkInDate field)
+  const otQuery = Request.exists({
+    userId: userObjectId,
+    type: 'OT_REQUEST',
+    status: 'APPROVED',
+    $or: [{ date }, { checkInDate: date }]
+  });
+  
+  const approvedOt = session ? await otQuery.session(session) : await otQuery;
+
+  if (approvedOt) {
+    updateFields.otApproved = true;
+  }
+
   // Defensive check: cannot create new attendance without checkInAt
   // (validation in createRequest should prevent this, but guard here for safety)
-  const exists = await Attendance.exists({ userId: userObjectId, date });
+  const existsQuery = Attendance.exists({ 
+    userId: userObjectId, 
+    date 
+  });
+  
+  const exists = session ? await existsQuery.session(session) : await existsQuery;
 
   if (!exists && !requestedCheckInAt) {
     const error = new Error('Cannot create attendance without check-in time');
@@ -707,6 +864,17 @@ async function updateAttendanceFromRequest(request) {
   }
 
   // Atomic upsert: create if not exists, update if exists
+  const upsertOptions = { 
+    upsert: true, 
+    new: true, 
+    runValidators: true
+  };
+  
+  // P1-1 Fix: Conditionally add session only if it exists
+  if (session) {
+    upsertOptions.session = session;
+  }
+  
   await Attendance.findOneAndUpdate(
     { userId: userObjectId, date },
     {
@@ -716,7 +884,7 @@ async function updateAttendanceFromRequest(request) {
         date
       }
     },
-    { upsert: true, new: true, runValidators: true }  // P0 Fix: Add runValidators for defense-in-depth
+    upsertOptions
   );
 }
 /**
@@ -910,4 +1078,232 @@ export const getApprovedLeaveDates = async (userId, monthStr) => {
   }
 
   return leaveDates;
+};
+
+/**
+ * Create OT request with comprehensive validation
+ * 
+ * Business Rules:
+ * - E1: Advance notice allowed (today or future)
+ * - E2: No retroactive (no past dates)
+ * - B1: Minimum 30 minutes OT
+ * - D1: Max 31 pending per month
+ * - D2: Auto-extend if PENDING exists for same date
+ * - I1: Cross-midnight requires 2 separate requests
+ * 
+ * @param {string} userId - User's ObjectId
+ * @param {Object} requestData - { date, estimatedEndTime, reason }
+ * @returns {Promise<Object>} Created or updated request
+ */
+export const createOtRequest = async (userId, requestData) => {
+  const { date, estimatedEndTime, reason } = requestData;
+  
+  // Validation 0: userId must be valid ObjectId (defensive)
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    const error = new Error('Invalid userId');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 0.5: date format must be valid (defensive)
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const error = new Error('Invalid date format. Expected YYYY-MM-DD');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 0.6: estimatedEndTime timezone (if string)
+  assertHasTzIfString(estimatedEndTime, 'estimatedEndTime');
+  
+  // Validation 0.6: Parse and validate estimatedEndTime (accept string or Date)
+  const endTime = toValidDate(estimatedEndTime, 'estimatedEndTime');
+  if (!endTime) {
+    const error = new Error('estimatedEndTime is required');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 0.7: reason must not be empty (defensive)
+  const trimmedReason = (reason ?? '').trim();
+  if (!trimmedReason) {
+    const error = new Error('Reason is required');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 0.8: reason length limit (consistent with ADJUST_TIME/LEAVE)
+  const MAX_REASON_LENGTH = 1000;
+  if (trimmedReason.length > MAX_REASON_LENGTH) {
+    const error = new Error(`Reason must be ${MAX_REASON_LENGTH} characters or less`);
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 1: Date must be today or future (E1, E2)
+  const todayKey = getTodayDateKey();
+  if (date < todayKey) {
+    const error = new Error('Cannot create OT request for past dates');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // ========== P1-2 FIX START ==========
+  // Validation 1.5: Same-day retroactive check (STRICT policy)
+  // Policy: OT must be requested BEFORE the estimated end time
+  // Rationale: Prevent retroactive OT recording abuse
+  if (date === todayKey) {
+    const now = Date.now();
+    if (endTime.getTime() <= now) {
+      const error = new Error(
+        'Cannot create OT request for past time. OT must be requested before the estimated end time.\n' +
+        `Current time: ${new Date(now).toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour12: false })} (GMT+7)\n` +
+        `Requested time: ${endTime.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour12: false })} (GMT+7)\n` +
+        'If you forgot to request, please contact your manager.'
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+  // ========== P1-2 FIX END ==========
+  
+  // Validation 2: estimatedEndTime must be on same date (I1)
+  const estimatedDateKey = getDateKey(endTime);
+  if (estimatedDateKey !== date) {
+    const error = new Error('Cross-midnight OT requires separate requests for each date. Please create a request for each day.');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 3: estimatedEndTime must be > 17:31 (OT period)
+  if (!isInOtPeriod(date, endTime)) {
+    const error = new Error('OT must start after 17:31. Please adjust your estimated end time.');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 4: Minimum 30 minutes OT (B1)
+  const estimatedOtMinutes = getOtDuration(date, endTime);
+  if (estimatedOtMinutes < 30) {
+    const error = new Error('Minimum OT duration is 30 minutes');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 5: Cannot create if already checked out (E2)
+  const existingAttendance = await Attendance.findOne({ userId, date });
+  if (existingAttendance?.checkOutAt) {
+    const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 6: Max 31 pending per month (D1)
+  // P1 Fix: Use $or to count legacy records (date vs checkInDate field)
+  const month = date.substring(0, 7);
+  const pendingCount = await Request.countDocuments({
+    userId,
+    type: 'OT_REQUEST',
+    status: 'PENDING',
+    $or: [
+      { date: { $regex: `^${month}` } },
+      { checkInDate: { $regex: `^${month}` } }
+    ]
+  });
+  
+  if (pendingCount >= 31) {
+    const error = new Error('Maximum 31 pending OT requests per month reached');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // D2: Auto-extend - Check if PENDING request exists for same date (ATOMIC FIX)
+  // P1 Fix: Use $or to match legacy records (date vs checkInDate field)
+  const existingRequest = await Request.findOneAndUpdate(
+    {
+      userId,
+      type: 'OT_REQUEST',
+      status: 'PENDING',
+      $or: [{ date }, { checkInDate: date }]
+    },
+    {
+      $set: {
+        estimatedEndTime: endTime,
+        reason: trimmedReason
+      }
+    },
+    { new: true }
+  );
+  
+  if (existingRequest) {
+    // Auto-extend successful
+    return existingRequest;
+  }
+  
+  // Create new OT request (no existing PENDING found)
+  try {
+    const request = await Request.create({
+      userId,
+      type: 'OT_REQUEST',
+      date,
+      checkInDate: date,  // For consistency with schema + unique index
+      estimatedEndTime: endTime,
+      reason: trimmedReason,
+      status: 'PENDING'
+    });
+    
+    return request;
+  } catch (err) {
+    // Handle MongoDB duplicate key error (should not happen due to findOneAndUpdate above)
+    if (err?.code === 11000) {
+      const error = new Error('Duplicate OT request detected. Please try again.');
+      error.statusCode = 409;
+      throw error;
+    }
+    throw err;
+  }
+};
+
+/**
+ * Cancel OT request (C2: only if PENDING)
+ * 
+ * @param {string} userId - User's ObjectId (for ownership check)
+ * @param {string} requestId - Request's ObjectId
+ * @returns {Promise<Object>} Success message
+ */
+export const cancelOtRequest = async (userId, requestId) => {
+  // Validation 0: userId must be valid ObjectId (defensive)
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    const error = new Error('Invalid userId');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Validation 1: requestId must be valid ObjectId
+  if (!mongoose.Types.ObjectId.isValid(requestId)) {
+    const error = new Error('Invalid request ID');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Find PENDING OT request owned by user
+  const request = await Request.findOne({
+    _id: requestId,
+    userId,
+    type: 'OT_REQUEST',
+    status: 'PENDING'
+  });
+  
+  if (!request) {
+    const error = new Error('OT request not found or already processed');
+    error.statusCode = 404;
+    throw error;
+  }
+  
+  // Delete the request
+  await Request.deleteOne({ _id: requestId });
+  
+  return { 
+    message: 'OT request cancelled successfully',
+    requestId 
+  };
 };
