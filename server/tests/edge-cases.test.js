@@ -279,8 +279,8 @@ describe('Equivalence Partitioning - RBAC for Reports', () => {
 // ============================================
 describe('Decision Table - Request Time Validation', () => {
     // Use explicit weekdays to avoid weekend issues
-    const thursday = '2026-01-29';  // Thursday (for full-day requests)
-    const friday = '2026-01-30';    // Friday (for today with attendance)
+    const thursday = '2026-02-05';  // Thursday (for full-day requests)
+    const friday = '2026-02-06';    // Friday (within 7-day window)
 
     // Create attendance for friday to test partial requests
     beforeAll(async () => {
@@ -345,8 +345,8 @@ describe('Decision Table - Request Time Validation', () => {
      * Rule 5a: Cross-midnight WITHIN grace period → ACCEPT
      * 
      * Business Logic:
-     * - Check-in: 2026-01-28 (Wednesday) 20:00 GMT+7
-     * - Check-out: 2026-01-29 (Thursday) 04:00 GMT+7 (8 hours later)
+     * - Check-in: 2026-02-04 (Wednesday) 20:00 GMT+7
+     * - Check-out: 2026-02-05 (Thursday) 04:00 GMT+7 (8 hours later)
      * - Session length: 8 hours (< 24h grace period) ✅
      * - Submission: Same day as check-in ✅
      * 
@@ -354,8 +354,8 @@ describe('Decision Table - Request Time Validation', () => {
      */
     it('Rule 5a: Cross-midnight within grace → 201', async () => {
         // Use explicit Wednesday/Thursday for cross-midnight test (different from Rule 1's Thursday)
-        const wednesday = '2026-01-28';  // Wednesday
-        const thursday = '2026-01-29';   // Thursday (next day)
+        const wednesday = '2026-02-04';  // Wednesday
+        const thursday = '2026-02-05';   // Thursday (next day)
         
         const res = await request(app)
             .post('/api/requests')
@@ -380,7 +380,7 @@ describe('Decision Table - Request Time Validation', () => {
      * 
      * Business Logic:
      * - Request created: Today (2026-02-01)
-     * - Check-in date: 2026-01-20 (12 days ago, Tuesday)
+     * - Check-in date: 2026-01-27 (14 days ago, Tuesday)
      * - Submission window: 7 days max (from ADJUST_REQUEST_MAX_DAYS)
      * - Time since check-in: 12 days > 7 days ❌
      * 
@@ -388,7 +388,7 @@ describe('Decision Table - Request Time Validation', () => {
      */
     it('Rule 5b: Beyond submission window → 400', async () => {
         // Use explicit old Tuesday (12 days ago from Feb 1)
-        const oldTuesday = '2026-01-20';  // Tuesday, 12 days before 2026-02-01
+        const oldTuesday = '2026-01-27';  // Tuesday, 14 days before 2026-02-10
         
         const res = await request(app)
             .post('/api/requests')
@@ -490,8 +490,8 @@ describe('Error Guessing - Common Implementation Mistakes', () => {
 // LATE COUNT VERIFICATION (Business Rule)
 // ============================================
 describe('Business Rule - Late Count Calculation', () => {
-    // Use explicit Thursday (2026-01-29) instead of dynamic yesterday (Saturday)
-    const thursday = '2026-01-29';
+    // Use explicit Thursday (2026-02-05) instead of dynamic yesterday (Saturday)
+    const thursday = '2026-02-05';
 
     beforeAll(async () => {
         // Create late attendance (check-in after 08:45)

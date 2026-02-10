@@ -62,10 +62,14 @@ beforeEach(async () => {
 
 describe('Step 5: createRequest 2-Rule Validation', () => {
     // Use specific weekday dates to avoid weekend validation failures
-    // 2026-01-29 = Thursday, 2026-01-30 = Friday
-    const thursday = '2026-01-29';
-    const friday = '2026-01-30';
-    const saturday = '2026-01-31';
+    // Current date: 2026-02-10 (Monday)
+    // Safe dates within 7-day window:
+    // 2026-02-04 = Wednesday (6 days ago)
+    // 2026-02-05 = Thursday (5 days ago)
+    // 2026-02-06 = Friday (4 days ago)
+    const thursday = '2026-02-05';
+    const friday = '2026-02-06';
+    const saturday = '2026-02-07';
 
     describe('Rule 1: Session Length Validation', () => {
         it('should accept cross-midnight request within 24h grace period', async () => {
@@ -91,7 +95,7 @@ describe('Step 5: createRequest 2-Rule Validation', () => {
         });
 
         it('should reject request exceeding 24h session length', async () => {
-            const threeDaysAgo = '2026-01-26'; // Monday
+            const threeDaysAgo = '2026-02-04'; // Monday
 
             // Create attendance: checked in 3 days ago
             await Attendance.create({
@@ -116,7 +120,7 @@ describe('Step 5: createRequest 2-Rule Validation', () => {
         });
 
         it('should validate session length when both checkIn and checkOut provided', async () => {
-            const twoDaysAgo = '2026-01-27'; // Tuesday
+            const twoDaysAgo = '2026-02-05'; // Tuesday
 
             // Both times provided, session > 24h
             const res = await request(app)
@@ -136,7 +140,7 @@ describe('Step 5: createRequest 2-Rule Validation', () => {
 
     describe('Rule 2: Submission Window Validation', () => {
         it('should reject request submitted >7 days after check-in', async () => {
-            const eightDaysAgo = '2026-01-21'; // Wednesday 8 days ago
+            const eightDaysAgo = '2026-01-30'; // Wednesday 8 days ago
 
             // Create attendance: checked in 8 days ago
             await Attendance.create({
@@ -161,8 +165,8 @@ describe('Step 5: createRequest 2-Rule Validation', () => {
         });
 
         it('should accept request within 7-day submission window', async () => {
-            // Test runs on 2026-02-01, so 6 days ago = 2026-01-26 (Monday)
-            const sixDaysAgo = '2026-01-26';
+            // Test runs on 2026-02-01, so 6 days ago = 2026-02-04 (Monday)
+            const sixDaysAgo = '2026-02-04';
 
             // Create attendance: checked in 6 days ago
             await Attendance.create({

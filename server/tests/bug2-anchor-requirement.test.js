@@ -71,7 +71,7 @@ beforeEach(async () => {
 });
 
 describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
-    const weekday = '2026-01-29'; // Thursday
+    const weekday = '2026-02-05'; // Thursday (within 7-day window)
 
     describe('Corrupt Request Scenarios (Missing Anchor)', () => {
         it('should reject corrupt checkIn-only request (missing requestedCheckInAt + no attendance)', async () => {
@@ -190,7 +190,7 @@ describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
     describe('Rule 2 Now Runs for ALL Requests', () => {
         it('should reject checkIn-only request exceeding submission window', async () => {
             // Create old attendance (9 days ago - exceeds 7-day window)
-            const oldDate = '2026-01-21'; // Wednesday, 9 days before 2026-01-30
+            const oldDate = '2026-01-28'; // Wednesday, 9 days before 2026-02-06
 
             const validRequest = await Request.create({
                 userId: employeeId,
@@ -214,7 +214,7 @@ describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
 
         it('should accept checkIn-only request within submission window', async () => {
             // Create recent request (5 days ago - within 7-day window)
-            const recentDate = '2026-01-27'; // Monday, 5 days before 2026-02-01
+            const recentDate = '2026-02-04'; // Wednesday, 6 days before 2026-02-10
 
             const validRequest = await Request.create({
                 userId: employeeId,

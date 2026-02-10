@@ -1073,8 +1073,8 @@ describe('Request Type Routing - LEAVE vs ADJUST_TIME', () => {
             .post('/api/requests')
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
-                date: '2027-02-10',
-                requestedCheckInAt: '2027-02-10T08:30:00+07:00',
+                date: '2026-02-10',
+                requestedCheckInAt: '2026-02-10T08:30:00+07:00',
                 reason: 'Default routing test'
             });
 
@@ -1088,8 +1088,8 @@ describe('Request Type Routing - LEAVE vs ADJUST_TIME', () => {
             .set('Authorization', `Bearer ${employeeToken}`)
             .send({
                 type: 'ADJUST_TIME',
-                date: '2027-02-11',
-                requestedCheckInAt: '2027-02-11T08:30:00+07:00',
+                date: '2026-02-09',
+                requestedCheckInAt: '2026-02-09T08:30:00+07:00',
                 reason: 'Explicit ADJUST_TIME test'
             });
 

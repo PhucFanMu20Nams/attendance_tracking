@@ -168,7 +168,7 @@ describe('LEVEL 1: HAPPY PATHS - Core Functionality', () => {
     });
 
     describe('3. Request - Create', () => {
-        const testDate = '2026-01-30'; // Friday (not weekend)
+        const testDate = '2026-02-06'; // Friday (not weekend, within 7-day window)
 
         afterEach(async () => {
             await Request.deleteMany({});
@@ -521,7 +521,7 @@ describe('LEVEL 2: VALIDATION & INPUT SANITIZATION', () => {
 // LEVEL 3: BUSINESS LOGIC (Game Rules)
 // ============================================
 describe('LEVEL 3: BUSINESS LOGIC', () => {
-    const testDate = '2026-02-16'; // Monday (not weekend)
+    const testDate = '2026-02-04'; // Within 7-day window
 
     beforeEach(async () => {
         await Request.deleteMany({});

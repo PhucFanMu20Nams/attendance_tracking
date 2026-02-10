@@ -149,7 +149,7 @@ afterAll(async () => {
 // ============================================
 describe('IDOR - Cross-Team Request Approval Attack', () => {
     let requestTeam2Id;
-    const testDate = '2026-01-26'; // Monday (not weekend - weekend approvals are blocked)
+    const testDate = '2026-02-04'; // Monday (not weekend - weekend approvals are blocked)
 
     beforeEach(async () => {
         await Request.deleteMany({});
@@ -225,7 +225,7 @@ describe('IDOR - Cross-Team Request Approval Attack', () => {
 // CASE 5: Parameter Tampering - Self-Approval Attack
 // ============================================
 describe('Parameter Tampering - Self-Approval Attack', () => {
-    const testDate = '2026-01-26';
+    const testDate = '2026-02-04';
 
     afterEach(async () => {
         await Request.deleteMany({});
@@ -281,7 +281,7 @@ describe('Parameter Tampering - Self-Approval Attack', () => {
 // CASE 1: The "Team Hopper" - User changes team mid-request
 // ============================================
 describe('Team Hopper - User changes team after creating request', () => {
-    const testDate = '2026-01-27';
+    const testDate = '2026-02-05';
     let requestId;
 
     beforeEach(async () => {
@@ -347,7 +347,7 @@ describe('Team Hopper - User changes team after creating request', () => {
 describe('Demoted Manager - Manager loses role but still has old token', () => {
     let demotedManagerToken;
     let requestId;
-    const testDate = '2026-01-28';
+    const testDate = '2026-02-06';
 
     beforeEach(async () => {
         await Request.deleteMany({});
@@ -410,7 +410,7 @@ describe('Demoted Manager - Manager loses role but still has old token', () => {
 // ============================================
 describe('Zombie User - Deactivated user using old token', () => {
     let zombieToken;
-    const testDate = '2026-01-29';
+    const testDate = '2026-02-07';
 
     beforeEach(async () => {
         await Request.deleteMany({});
@@ -529,10 +529,20 @@ describe('MongoDB ObjectId Casting - Input Validation', () => {
 // CASE 8: Emoji & Special Character Attack
 // ============================================
 describe('Emoji & Special Character Attack - Unicode Handling', () => {
-    const testDate = '2026-01-30';
+    const testDate = '2026-02-05'; // Thursday (weekday, within 7-day window)
+
+    beforeEach(async () => {
+        // Create attendance to provide anchor time for checkout-only requests
+        await Attendance.create({
+            userId: employeeTeam1Id,
+            date: testDate,
+            checkInAt: new Date(`${testDate}T08:00:00+07:00`)
+        });
+    });
 
     afterEach(async () => {
         await Request.deleteMany({});
+        await Attendance.deleteMany({});
     });
 
     it('should handle emoji in reason field without crashing', async () => {

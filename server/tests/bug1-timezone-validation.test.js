@@ -58,7 +58,7 @@ beforeEach(async () => {
 });
 
 describe('Bug #1 Fix: Timezone Validation for Date Objects', () => {
-    const weekday = '2026-01-29'; // Thursday
+    const weekday = '2026-02-05'; // Thursday (within 7-day submission window)
 
     describe('String Inputs with Timezone', () => {
         it('should accept ISO string with +HH:MM timezone', async () => {
@@ -123,7 +123,7 @@ describe('Bug #1 Fix: Timezone Validation for Date Objects', () => {
                 .set('Authorization', `Bearer ${employeeToken}`)
                 .send({
                     date: weekday,
-                    requestedCheckInAt: '2026-01-29 08:00', // Ambiguous format
+                    requestedCheckInAt: '2026-02-05 08:00', // Ambiguous format
                     reason: 'Test ambiguous string'
                 });
 
@@ -200,7 +200,7 @@ describe('Bug #1 Fix: Timezone Validation for Date Objects', () => {
 });
 
 describe('Bug #1 Defense: Date Object Compatibility', () => {
-    const weekday = '2026-01-29';
+    const weekday = '2026-02-05'; // Within 7-day submission window
 
     it('should document that Express JSON parser converts ISO strings to strings, not Date objects', () => {
         // This test documents the current behavior:
