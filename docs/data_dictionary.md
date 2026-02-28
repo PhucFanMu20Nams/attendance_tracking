@@ -2,7 +2,7 @@
 
 v2.3 adds soft delete, leave requests, and pagination support.
 v2.5 adds Today Activity pagination.
-v2.6 adds OT Request approval system (OT_REQUEST type).
+v2.6 adds OT Request approval system (OT_REQUEST type), audit logging, and cross-midnight ADJUST_TIME support.
 
 ## 1) users
 Purpose: accounts + roles + team assignment.
@@ -72,6 +72,7 @@ Fields:
 
 Constraints / Indexes:
 - unique(userId + date)
+- partial index: (userId + checkInAt DESC) where checkOutAt=null (cross-midnight open session optimization)
 
 Notes:
 - Do NOT store fixed status in DB.
@@ -93,11 +94,15 @@ Fields:
 - type: enum ["ADJUST_TIME", "LEAVE", "OT_REQUEST"] [optional, default "ADJUST_TIME"] (UPDATED v2.6)
 - requestedCheckInAt: Date | null [for ADJUST_TIME only]
 - requestedCheckOutAt: Date | null [for ADJUST_TIME only]
+- checkInDate: string "YYYY-MM-DD" | null [for ADJUST_TIME cross-midnight] (NEW v2.6 - actual check-in date)
+- checkOutDate: string "YYYY-MM-DD" | null [for ADJUST_TIME cross-midnight] (NEW v2.6 - actual check-out date)
 - estimatedEndTime: Date | null [for OT_REQUEST only] (NEW v2.6)
+- actualOtMinutes: Number | null [for OT_REQUEST only] (NEW v2.6 - filled after checkout for tracking)
 - leaveStartDate: string "YYYY-MM-DD" | null [for LEAVE only] (NEW v2.3)
 - leaveEndDate: string "YYYY-MM-DD" | null [for LEAVE only] (NEW v2.3)
 - leaveType: enum ["ANNUAL", "SICK", "UNPAID"] | null [optional] (NEW v2.3)
-- reason: string [required]
+- leaveDaysCount: Number | null [for LEAVE only] (NEW v2.6 - pre-computed workday count)
+- reason: string [required for OT_REQUEST at model level; validated by controller for all types]
 - status: enum ["PENDING", "APPROVED", "REJECTED"] [default "PENDING"]
 - approvedBy: ObjectId -> users._id [optional]
 - approvedAt: Date [optional]
@@ -105,7 +110,12 @@ Fields:
 - updatedAt: Date
 
 Indexes (NEW v2.6):
-- unique(userId + date + type) for OT_REQUEST auto-extend feature (see rules.md §10.2 E2)
+- compound(userId + status) for user request queries
+- unique(userId + checkInDate + type) where status=PENDING, type=ADJUST_TIME (prevents duplicate pending ADJUST_TIME)
+- compound(userId + type + status) for LEAVE overlap queries
+- partial(userId + checkInDate + status) where type=ADJUST_TIME (cross-midnight query optimization)
+- partial(userId + checkOutDate + status) where type=ADJUST_TIME (cross-midnight query optimization)
+- unique(userId + date + type) where status=PENDING, type=OT_REQUEST (auto-extend feature, see rules.md §10.2 D2)
 
 Notes:
 - For ADJUST_TIME: approving updates attendance (create if not exist).
@@ -120,3 +130,35 @@ Notes:
 - OT_REQUEST uses date field (single day), ignore leave fields.
 - Overlap check: query by (userId, status: APPROVED, type: LEAVE) and compare date ranges.
   Consider compound index on (userId, type, status) for performance.
+- Cross-midnight ADJUST_TIME: uses checkInDate/checkOutDate for date boundary detection.
+  Pre-validate hook enforces: date === checkInDate for ADJUST_TIME (invariant).
+  Pre-validate hook clears cross-type field contamination (e.g., OT fields on LEAVE requests).
+
+## 6) auditLogs (NEW v2.6)
+Purpose: track attendance anomalies for admin review.
+
+Fields:
+- _id: ObjectId
+- type: enum ["MULTIPLE_ACTIVE_SESSIONS", "STALE_OPEN_SESSION"] [required]
+- userId: ObjectId -> users._id [required]
+- details: Mixed (structure validated by pre-save hook, see below) [required]
+- createdAt: Date
+- updatedAt: Date
+
+Details structure by type:
+- MULTIPLE_ACTIVE_SESSIONS:
+  - sessionCount: Number (>= 2)
+  - sessions: Array of { _id, date (YYYY-MM-DD), checkInAt (Date) } (max 100)
+- STALE_OPEN_SESSION:
+  - sessionDate: string (YYYY-MM-DD)
+  - checkInAt: Date
+  - detectedAt: enum ["checkIn", "checkOut"]
+
+Indexes:
+- compound(userId + createdAt DESC) for user audit log queries
+- TTL(createdAt, 90 days) auto-delete after 90 days
+
+Notes:
+- Write-once pattern: use create() only, no updates.
+- Pre-save hook validates details structure based on type.
+- Auto-cleanup via TTL prevents database bloat.

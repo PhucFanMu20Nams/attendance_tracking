@@ -1,4 +1,4 @@
-# Manual Test Checklist — Attendance App (v2.5)
+# Manual Test Checklist — Attendance App (v2.6)
 
 ## Auth
 - [ ] Login with wrong password → error
@@ -24,7 +24,8 @@
 - [ ] Check-in <= 08:45 → ON_TIME
 - [ ] Check-in >= 08:46 → LATE
 - [ ] Check-out < 17:30 → EARLY_LEAVE
-- [ ] Check-out > 17:31 → otMinutes > 0
+- [ ] Check-out > 17:31 with otApproved=true → otMinutes > 0 (UPDATED v2.6)
+- [ ] Check-out > 17:31 with otApproved=false → otMinutes = 0, workMinutes capped at 17:30 (NEW v2.6 STRICT)
 - [ ] Lunch deduction:
   - [ ] checkIn < 12:00 and checkOut > 13:00 → workMinutes deduct 60
   - [ ] otherwise → no lunch deduction
@@ -97,4 +98,74 @@
 - [ ] Scope filter change → resets to page 1
 - [ ] Team filter change → resets to page 1
 - [ ] Total count displayed correctly in header
+
+## OT Request Tests (NEW v2.6)
+
+### Backend - OT Request Creation
+- [ ] POST /requests with type=OT_REQUEST, date=today, estimatedEndTime > 18:01 → 201 Created
+- [ ] OT request for past date → 400 "Cannot create OT request for past dates"
+- [ ] OT request for today with estimatedEndTime in the past → 400 "Cannot create OT request for past time"
+- [ ] OT request with estimatedEndTime < 18:01 → 400 "Minimum OT duration is 30 minutes"
+- [ ] OT request after checkout already exists → 400 "Cannot request OT after checkout"
+- [ ] OT request with estimatedEndTime on different date (GMT+7) → 400 cross-midnight error
+- [ ] Duplicate PENDING OT request same date → auto-extend (updates existing request)
+- [ ] 32nd PENDING OT request in same month → 400 quota exceeded
+- [ ] OT request without reason → 400 "Reason is required"
+
+### Backend - OT Request Approval
+- [ ] Approve OT_REQUEST → attendance.otApproved = true
+- [ ] Approve when attendance doesn’t exist yet → otApproved applied on next check-in
+- [ ] Reject OT_REQUEST → status changes to REJECTED
+- [ ] Manager approves same-team OT request → 200 OK
+- [ ] Manager approves other-team OT request → 403 Forbidden
+
+### Backend - OT Cancellation
+- [ ] DELETE /requests/:id (owner, PENDING) → 200, request deleted from DB
+- [ ] DELETE /requests/:id (non-owner) → 403 or 404
+- [ ] DELETE /requests/:id (APPROVED status) → 400/404
+
+### Backend - OT Calculation (STRICT Mode)
+- [ ] Checkout at 20:00 with otApproved=true → otMinutes = 149, workMinutes includes lunch deduction
+- [ ] Checkout at 20:00 with otApproved=false → otMinutes = 0, workMinutes capped at 17:30
+- [ ] Weekend/holiday checkout → OT calculated regardless of otApproved (F1 exception)
+
+### Backend - Check-In Integration
+- [ ] Check-in with pre-approved OT request for today → otApproved auto-set to true
+- [ ] Check-in without OT request → otApproved remains false
+- [ ] Check-in first, then OT approved → otApproved updated on attendance record
+
+### Backend - OT Reporting
+- [ ] Monthly report includes totalOtMinutes, approvedOtMinutes, unapprovedOtMinutes
+- [ ] unapprovedOtMinutes tracks worked time after 17:31 without approval
+
+## Cross-Midnight Tests (NEW v2.6)
+
+### Backend - Cross-Midnight Checkout
+- [ ] Check-in today, check-out tomorrow (within grace period) → 200 OK
+- [ ] Check-in today, check-out after 24h grace period → blocked
+- [ ] CHECKOUT_GRACE_HOURS env var respected (default 24, range 1-48)
+- [ ] Multiple active sessions detected → AuditLog created (MULTIPLE_ACTIVE_SESSIONS)
+- [ ] Stale session detected on check-in → AuditLog created (STALE_OPEN_SESSION)
+- [ ] Attendance record belongs to check-in date (not checkout date)
+- [ ] Month filter /attendance/me?month=YYYY-MM returns by check-in date
+
+### Backend - Cross-Midnight ADJUST_TIME
+- [ ] ADJUST_TIME request with checkOutDate > checkInDate → accepted
+- [ ] ADJUST_TIME request with checkOutDate < checkInDate → 400 validation error
+- [ ] date field always equals checkInDate for ADJUST_TIME (invariant)
+
+## Admin Force Checkout (NEW v2.6)
+
+### Backend
+- [ ] POST /admin/attendance/:id/force-checkout → 200, sets checkOutAt
+- [ ] Force checkout on already checked-out record → error
+- [ ] Non-admin calls force-checkout → 403 Forbidden
+
+## Audit Log Tests (NEW v2.6)
+
+### Backend
+- [ ] MULTIPLE_ACTIVE_SESSIONS logged when user has >1 open session
+- [ ] STALE_OPEN_SESSION logged when open session is outside grace period
+- [ ] AuditLog validates details structure via pre-save hook
+- [ ] TTL index auto-deletes logs older than 90 days
 

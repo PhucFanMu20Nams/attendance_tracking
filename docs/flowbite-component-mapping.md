@@ -127,6 +127,41 @@ import { Table, Select, Button, Spinner, Alert } from "flowbite-react";
 - `Table` - summary
 - `Button` - export (triggers download)
 
+### 9. ProfilePage (NEW v2.2)
+```jsx
+import { Card, Spinner } from "flowbite-react";
+```
+- `Card` - user profile container
+- `Spinner` - loading state
+
+### 10. AdminHolidaysPage (NEW v2.3)
+```jsx
+import { Table, Button, Label, TextInput, Datepicker, Modal, Alert, Spinner } from "flowbite-react";
+```
+- `Table` - holiday list
+- `Datepicker` - date/range picker
+- `TextInput` - holiday name
+- `Button` - create/delete
+- `Modal` - confirm action
+
+### 11. AdminMemberDetailPage (NEW v2.2)
+```jsx
+import { Card, Table, Badge, Select, Spinner, Alert } from "flowbite-react";
+```
+- `Card` - user profile
+- `Table` - monthly attendance table
+- `Select` - month picker
+- `Badge` - status display
+
+### 12. TeamMemberDetailPage (NEW v2.2)
+```jsx
+import { Card, Table, Badge, Select, Spinner, Alert } from "flowbite-react";
+```
+- `Card` - user profile (read-only)
+- `Table` - monthly attendance table
+- `Select` - month picker
+- `Badge` - status display
+
 ---
 
 ## ⚠️ Không cần từ Flowbite Blocks (Premium)

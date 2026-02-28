@@ -1,4 +1,4 @@
-# MVP Scope — Attendance Web App (MERN) (v2.5)
+# MVP Scope — Attendance Web App (MERN) (v2.6)
 
 ## Goal
 Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
@@ -73,8 +73,43 @@ Manager:
 - **B) Soft Delete**: 15-day grace period before purge (configurable)
 
 #### Complex (Needs Design)
-- **F) Leave Request**: New request type with date range
-- **G) Cross-midnight OT**: Checkout on next day for overnight shifts
+- **F) Leave Request**: New request type with date range ✅ DONE
+- **G) Cross-midnight OT**: Checkout on next day for overnight shifts ✅ DONE
+
+### 10) OT Request System (NEW v2.6)
+
+#### OT Approval Workflow
+- OT is now **approval-based**, not automatic (STRICT mode)
+- Employee creates `OT_REQUEST` before checkout
+- Manager/Admin approves → OT calculated on checkout
+- No approval → workMinutes capped at 17:30, otMinutes = 0
+
+#### OT Request Features
+- **OT_REQUEST type**: Third request type alongside ADJUST_TIME and LEAVE
+- **STRICT mode (A1)**: Without approval, work capped at 17:30, OT = 0
+- **No retroactive requests (E2)**: date >= today required
+- **Same-day time check**: estimatedEndTime must be in the future
+- **Auto-extend (D2)**: Updating existing PENDING request for same date
+- **Quota (D1)**: Max 31 pending OT requests per month per user
+- **Minimum duration (B1)**: OT must be ≥ 30 minutes (estimatedEndTime ≥ 18:01)
+- **Weekend/holiday exception (F1)**: No OT_REQUEST needed for weekend/holiday OT
+- **Cross-midnight OT (I1)**: Requires 2 separate requests (one per date)
+- **Cancellation (C2)**: DELETE /api/requests/:id (owner, PENDING only, deletes record)
+- **Check-in integration**: otApproved auto-set on check-in if approved OT exists
+- **Reporting (H2)**: Three OT metrics: totalOtMinutes, approvedOtMinutes, unapprovedOtMinutes
+
+### 11) Audit & Admin Tools (NEW v2.6)
+
+- **AuditLog system**: Tracks `MULTIPLE_ACTIVE_SESSIONS` and `STALE_OPEN_SESSION` events
+  - 90-day TTL auto-cleanup via MongoDB TTL index
+  - Pre-save validation ensures data integrity
+- **Force Checkout**: Admin endpoint `POST /api/admin/attendance/:id/force-checkout`
+  - Closes stale open sessions detected by the system
+- **Grace Config**: Environment variable-based configuration
+  - `CHECKOUT_GRACE_HOURS` (1-48, default 24): Max time from check-in to checkout
+  - `ADJUST_REQUEST_MAX_DAYS` (1-30, default 7): Submission window for adjust requests
+- **Cross-midnight ADJUST_TIME**: Requests spanning midnight boundaries
+  - Uses `checkInDate`/`checkOutDate` fields for date boundary detection
 
 ## Out-of-scope (NOT in MVP)
 - Anti-fraud: GPS/QR/device/IP restriction
@@ -84,7 +119,7 @@ Manager:
 - Payroll/salary and complex OT payment rules
 - Import employees from Excel/HR systems
 
-## Performance & Security Notes (v2.5)
+## Performance & Security Notes (v2.6)
 
 ### Query Optimization
 - **Requests**: Use `.select()` + `.lean()` for lightweight queries when checking existing attendance
@@ -94,6 +129,12 @@ Manager:
 ### Pagination
 - All paginated endpoints follow pattern: `parsePaginationParams → count → clamp → find → buildPaginatedResponse`
 - Endpoints: `/admin/users`, `/requests/me`, `/requests/pending`, `/attendance/today` (v2.5)
+
+### OT Request Optimization (v2.6)
+- **Partial unique indexes**: Prevent duplicate PENDING requests at DB level (race condition protection)
+- **Auto-extend**: findOneAndUpdate for atomic upsert instead of check-then-insert
+- **Pre-validate hooks**: Model-level cross-contamination cleanup prevents data pollution between request types
+- **Admin route RBAC**: Currently enforced at controller level (defense-in-depth), not at route middleware level
 
 ## MVP Definition of Done
 - Login works

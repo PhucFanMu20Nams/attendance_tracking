@@ -1,4 +1,4 @@
-# Rules — Attendance Logic (v2.5)
+# Rules — Attendance Logic (v2.6)
 
 Timezone: Asia/Ho_Chi_Minh (GMT+7)  
 All dateKey calculations MUST use GMT+7.
@@ -69,6 +69,17 @@ Status priority (current implementation):
 ### 3.5 Working (today)
 - Today with checkInAt exists but checkOutAt is null => WORKING
 
+### 3.6 Missing Check-in (NEW v2.6)
+- checkOutAt exists but checkInAt is null => MISSING_CHECKIN
+- This is an edge case (data corruption or manual entry error)
+
+### 3.7 Unknown (NEW v2.6)
+- Returned for invalid/corrupted data scenarios:
+  - null or undefined attendance record
+  - Empty or invalid dateKey
+  - checkOutAt < checkInAt (reversed timestamps)
+- Acts as a fail-safe to prevent misclassification
+
 ## 4) Minutes Computation
 ### 4.1 lateMinutes
 If status is LATE or WORKING (late so far):
@@ -111,8 +122,10 @@ On approve:
   - LATE_AND_EARLY => purple (NEW v2.3)
   - WORKING => blue
   - MISSING_CHECKOUT => yellow (darker)
+  - MISSING_CHECKIN => red (darker) (NEW v2.6)
   - ABSENT => grey (lighter shade, distinct from weekend)
   - LEAVE => cyan (NEW v2.3)
+  - UNKNOWN => grey (dashed border) (NEW v2.6)
   - null => empty/neutral
 
 ## 7) Member Management Rules (NEW v2.2)
@@ -396,8 +409,11 @@ attendance.otApproved = true  // for that date
 ```
 PENDING → APPROVED (manager/admin action)
 PENDING → REJECTED (manager/admin action)
-PENDING → CANCELLED (employee action, before approval only)
+PENDING → DELETED (employee cancels via DELETE /api/requests/:id)
 ```
+
+> **Note:** Cancellation deletes the request from the database entirely.
+> There is no `CANCELLED` status in the enum. See §10.7 for details.
 
 **No Rejection Reason Required (G2):**
 - Rejection doesn't require explanation
