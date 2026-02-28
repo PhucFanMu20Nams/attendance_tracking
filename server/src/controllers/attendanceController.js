@@ -1,8 +1,6 @@
 import * as attendanceService from '../services/attendanceService.js';
 import { getTodayDateKey, getDateKey } from '../utils/dateUtils.js';
 import mongoose from 'mongoose';
-import User from '../models/User.js';
-import Attendance from '../models/Attendance.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 import { parsePaginationParams } from '../utils/pagination.js';
 
@@ -197,7 +195,7 @@ export const getMyAttendance = async (req, res) => {
 /**
  * GET /api/attendance/user/:id?month=YYYY-MM
  * Get monthly attendance history for a specific user (Member Management).
- * 
+ *
  * RBAC:
  * - MANAGER: can only access users in same team (Anti-IDOR, returns 403)
  * - ADMIN: can access any user
@@ -206,91 +204,20 @@ export const getMyAttendance = async (req, res) => {
 export const getAttendanceByUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, teamId: requestingUserTeamId } = req.user;
-    // Normalize query param (handle whitespace + array edge cases)
-    let month = req.query.month;
-    if (Array.isArray(month)) month = month[0];
-    month = typeof month === 'string' ? month.trim() : undefined;
 
-    // Validate ObjectId format
+    // Validate ObjectId format (HTTP-level input check)
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         message: 'Invalid user ID format'
       });
     }
 
-    // Block Employee role
-    if (role === 'EMPLOYEE') {
-      return res.status(403).json({
-        message: 'Insufficient permissions. Manager or Admin required.'
-      });
-    }
+    // Normalize query param (handle whitespace + array edge cases)
+    let month = req.query.month;
+    if (Array.isArray(month)) month = month[0];
+    month = typeof month === 'string' ? month.trim() : undefined;
 
-    // FIX C: Manager without teamId cannot access member management
-    if (role === 'MANAGER' && !requestingUserTeamId) {
-      return res.status(403).json({
-        message: 'Manager must be assigned to a team'
-      });
-    }
-
-    // Validate month format (default to current month if not provided)
-    if (!month) {
-      const today = getTodayDateKey();
-      month = today.substring(0, 7); // Extract "YYYY-MM"
-    } else if (!/^\d{4}-\d{2}$/.test(month)) {
-      return res.status(400).json({
-        message: 'Invalid month format. Expected YYYY-MM (e.g., 2026-01)'
-      });
-    }
-
-    // Query-level Anti-IDOR (cleaner pattern):
-    // - MANAGER: query includes teamId to only verify same-team users
-    // - ADMIN: can access any user
-    let targetUser;
-
-    if (role === 'MANAGER') {
-      // Manager can only access users in same team (Anti-IDOR at query level)
-      targetUser = await User.findOne({
-        _id: id,
-        teamId: requestingUserTeamId,
-        deletedAt: null
-      })
-        .select('_id')
-        .lean();
-
-      // Not found OR different team => same 403 response (per RULES.md line 126)
-      if (!targetUser) {
-        return res.status(403).json({
-          message: 'Access denied. You can only view users in your team.'
-        });
-      }
-    } else {
-      // Admin can access any user (but not soft-deleted)
-      targetUser = await User.findOne({
-        _id: id,
-        deletedAt: null
-      })
-        .select('_id')
-        .lean();
-
-      // Not found
-      if (!targetUser) {
-        return res.status(404).json({
-          message: 'User not found'
-        });
-      }
-    }
-
-    // Fetch holidays from database for this month
-    const holidayDates = await getHolidayDatesForMonth(month);
-
-    // Phase 3: Fetch approved leave dates for this user in this month
-    // (same pattern as getMyAttendance for consistency)
-    const { getApprovedLeaveDates } = await import('../services/requestService.js');
-    const leaveDates = await getApprovedLeaveDates(id, month);
-
-    // Get monthly history using existing service
-    const items = await attendanceService.getMonthlyHistory(id, month, holidayDates, leaveDates);
+    const items = await attendanceService.getAttendanceByUserId(id, month, req.user);
 
     return res.status(200).json({ items });
   } catch (error) {
@@ -302,8 +229,6 @@ export const getAttendanceByUser = async (req, res) => {
     }
 
     const statusCode = error.statusCode || 500;
-
-    // 4xx returns message, 5xx returns generic (OWASP A09)
     const responseMessage = statusCode < 500
       ? (error.message || 'Request failed')
       : 'Internal server error';
@@ -317,7 +242,7 @@ export const getAttendanceByUser = async (req, res) => {
 /**
  * POST /api/admin/attendance/:id/force-checkout
  * Admin-only: Force close stale open session with custom checkout time
- * 
+ *
  * RBAC: ADMIN only
  * Purpose: Data correction, cleanup, forgot-to-checkout scenarios
  */
@@ -326,28 +251,28 @@ export const forceCheckout = async (req, res) => {
     const { id } = req.params;
     const { checkOutAt } = req.body;
 
-    // RBAC: ADMIN only
+    // RBAC: ADMIN only (endpoint-level guard)
     if (req.user.role !== 'ADMIN') {
       return res.status(403).json({
         message: 'Insufficient permissions. Admin required.'
       });
     }
 
-    // Validation 1: ObjectId format
+    // Validate ObjectId format (HTTP-level input check)
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
         message: 'Invalid attendance ID format'
       });
     }
 
-    // Validation 2: checkOutAt required
+    // Validate checkOutAt present (HTTP-level input check)
     if (!checkOutAt) {
       return res.status(400).json({
         message: 'checkOutAt is required'
       });
     }
 
-    // Validation 3: checkOutAt must be valid date
+    // Validate checkOutAt is a parseable date (HTTP-level input check)
     const checkOutDate = new Date(checkOutAt);
     if (isNaN(checkOutDate.getTime())) {
       return res.status(400).json({
@@ -355,55 +280,12 @@ export const forceCheckout = async (req, res) => {
       });
     }
 
-    // Fetch attendance
-    const attendance = await Attendance.findById(id);
+    const attendance = await attendanceService.forceCheckoutAttendance(id, checkOutDate);
 
-    if (!attendance) {
-      return res.status(404).json({
-        message: 'Attendance record not found'
-      });
-    }
-
-    // Validation 4: Must have checkIn
-    if (!attendance.checkInAt) {
-      return res.status(400).json({
-        message: 'Cannot force checkout: No check-in recorded'
-      });
-    }
-
-    // Validation 5: Must not already have checkOut
-    if (attendance.checkOutAt) {
-      return res.status(400).json({
-        message: 'Already checked out. Use PATCH if you need to modify existing checkout.'
-      });
-    }
-
-    // Validation 6: checkOutAt must be after checkInAt
-    if (checkOutDate <= new Date(attendance.checkInAt)) {
-      return res.status(400).json({
-        message: 'checkOutAt must be after checkInAt'
-      });
-    }
-
-    // Cross-midnight policy: Allow checkOutAt on different date (within grace period)
-    // Removed Validation 7 to align with checkOut() service and requestService cross-midnight support
-
-    // Perform force checkout
-    attendance.checkOutAt = checkOutDate;
-    await attendance.save();
-
-    // Return sanitized response
     return res.status(200).json({
       message: 'Forced checkout successful',
-      attendance: {
-        _id: attendance._id,
-        userId: attendance.userId,
-        date: attendance.date,
-        checkInAt: attendance.checkInAt,
-        checkOutAt: attendance.checkOutAt
-      }
+      attendance
     });
-
   } catch (error) {
     // OWASP A05/A09: Verbose logging in dev, generic in prod
     if (process.env.NODE_ENV !== 'production') {

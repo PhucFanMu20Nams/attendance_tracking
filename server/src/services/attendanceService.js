@@ -6,6 +6,7 @@ import { getTodayDateKey, isWeekend } from '../utils/dateUtils.js';
 import { computeAttendance } from '../utils/attendanceCompute.js';
 import { clampPage } from '../utils/pagination.js';
 import { getCheckoutGraceMs } from '../utils/graceConfig.js';
+import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 
 /**
  * Check-in: Create today's attendance with checkInAt timestamp.
@@ -420,3 +421,132 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
   };
 };
 
+
+/**
+ * Get monthly attendance history for a specific user (Member Management).
+ * Handles RBAC/Anti-IDOR authorization, month normalization, holiday + leave fetching,
+ * and delegates to getMonthlyHistory.
+ *
+ * @param {string} targetUserId - The user whose attendance is being fetched (validated ObjectId string)
+ * @param {string|undefined} month - "YYYY-MM" string (raw from query, may be undefined)
+ * @param {Object} requestingUser - req.user ({ role, teamId, _id })
+ * @returns {Promise<Array>} Array of attendance day items
+ */
+export const getAttendanceByUserId = async (targetUserId, month, requestingUser) => {
+  const { role, teamId: requestingUserTeamId } = requestingUser;
+
+  // Block Employee role
+  if (role === 'EMPLOYEE') {
+    const error = new Error('Insufficient permissions. Manager or Admin required.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  // Manager without teamId cannot access member management
+  if (role === 'MANAGER' && !requestingUserTeamId) {
+    const error = new Error('Manager must be assigned to a team');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  // Normalize month (handle whitespace + array handled by controller before call)
+  if (!month) {
+    const today = getTodayDateKey();
+    month = today.substring(0, 7);
+  } else if (!/^\d{4}-\d{2}$/.test(month)) {
+    const error = new Error('Invalid month format. Expected YYYY-MM (e.g., 2026-01)');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Query-level Anti-IDOR:
+  // - MANAGER: verify target user is in same team
+  // - ADMIN: can access any user (but not soft-deleted)
+  let targetUser;
+
+  if (role === 'MANAGER') {
+    targetUser = await User.findOne({
+      _id: targetUserId,
+      teamId: requestingUserTeamId,
+      deletedAt: null
+    })
+      .select('_id')
+      .lean();
+
+    if (!targetUser) {
+      const error = new Error('Access denied. You can only view users in your team.');
+      error.statusCode = 403;
+      throw error;
+    }
+  } else {
+    targetUser = await User.findOne({
+      _id: targetUserId,
+      deletedAt: null
+    })
+      .select('_id')
+      .lean();
+
+    if (!targetUser) {
+      const error = new Error('User not found');
+      error.statusCode = 404;
+      throw error;
+    }
+  }
+
+  // Fetch holidays for the month
+  const holidayDates = await getHolidayDatesForMonth(month);
+
+  // Fetch approved leave dates for this user in this month
+  const { getApprovedLeaveDates } = await import('./requestService.js');
+  const leaveDates = await getApprovedLeaveDates(targetUserId, month);
+
+  return getMonthlyHistory(targetUserId, month, holidayDates, leaveDates);
+};
+
+/**
+ * Force-close a stale open attendance session (Admin correction workflow).
+ * Handles attendance lookup, all business validations, and persists the checkout.
+ *
+ * @param {string} attendanceId - Validated ObjectId string of the Attendance record
+ * @param {Date} checkOutDate - Parsed, valid Date object for the forced checkout time
+ * @returns {Promise<Object>} Sanitized attendance record
+ */
+export const forceCheckoutAttendance = async (attendanceId, checkOutDate) => {
+  const attendance = await Attendance.findById(attendanceId);
+
+  if (!attendance) {
+    const error = new Error('Attendance record not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (!attendance.checkInAt) {
+    const error = new Error('Cannot force checkout: No check-in recorded');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (attendance.checkOutAt) {
+    const error = new Error('Already checked out. Use PATCH if you need to modify existing checkout.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (checkOutDate <= new Date(attendance.checkInAt)) {
+    const error = new Error('checkOutAt must be after checkInAt');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // Perform forced checkout
+  attendance.checkOutAt = checkOutDate;
+  await attendance.save();
+
+  return {
+    _id: attendance._id,
+    userId: attendance.userId,
+    date: attendance.date,
+    checkInAt: attendance.checkInAt,
+    checkOutAt: attendance.checkOutAt
+  };
+};
