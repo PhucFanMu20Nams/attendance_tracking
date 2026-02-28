@@ -87,7 +87,10 @@ export default function PendingRequestsTable({
         if (type === 'LEAVE') {
             return <Badge color="cyan">Nghỉ phép</Badge>;
         }
-        return <Badge color="purple">Điều chỉnh</Badge>;
+        if (type === 'OT_REQUEST') {
+            return <Badge color="purple">Đăng ký OT</Badge>;
+        }
+        return <Badge color="indigo">Điều chỉnh</Badge>;
     };
 
     return (
@@ -137,7 +140,7 @@ export default function PendingRequestsTable({
                                         )}
                                     </Table.Cell>
 
-                                    {/* Details (Time or Leave Info) */}
+                                    {/* Details (Time or Leave Info or OT Info) */}
                                     <Table.Cell className="whitespace-nowrap">
                                         {req.type === 'LEAVE' ? (
                                             <div className="flex flex-col gap-1">
@@ -147,6 +150,48 @@ export default function PendingRequestsTable({
                                                 <span className="text-xs text-gray-600">
                                                     {req.leaveDaysCount ?? 0} ngày làm việc
                                                 </span>
+                                            </div>
+                                        ) : req.type === 'OT_REQUEST' ? (
+                                            <div className="space-y-2">
+                                                <div className="text-sm space-y-1">
+                                                    <div>
+                                                        <span className="text-gray-600">Nhân viên:</span>
+                                                        <span className="ml-2 font-medium">{req.userId?.name || 'N/A'}</span>
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-gray-600">Ngày:</span>
+                                                        <span className="ml-2 font-medium">{formatDate(req.date)}</span>
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-gray-600">Dự kiến về:</span>
+                                                        <span className="ml-2 font-medium">{formatTime(req.estimatedEndTime)}</span>
+                                                    </div>
+                                                    {(() => {
+                                                        try {
+                                                            const otStart = new Date(`${req.date}T17:31:00+07:00`);
+                                                            const otEnd = new Date(req.estimatedEndTime);
+                                                            const diffMinutes = Math.floor((otEnd - otStart) / 60000);
+                                                            if (diffMinutes > 0) {
+                                                                const hours = Math.floor(diffMinutes / 60);
+                                                                const minutes = diffMinutes % 60;
+                                                                return (
+                                                                    <div>
+                                                                        <span className="text-gray-600">Thời lượng dự kiến:</span>
+                                                                        <span className="ml-2 font-bold text-purple-600">
+                                                                            {hours}h {minutes}m
+                                                                        </span>
+                                                                    </div>
+                                                                );
+                                                            }
+                                                        } catch (err) {
+                                                            console.warn('Failed to calculate OT duration:', err);
+                                                        }
+                                                        return null;
+                                                    })()}
+                                                </div>
+                                                <div className="text-xs text-purple-700 bg-purple-50 p-2 rounded border border-purple-200">
+                                                    <strong>Lưu ý quản lý:</strong> Nhân viên cần approval trước checkout để được tính OT
+                                                </div>
                                             </div>
                                         ) : (
                                             <div className="flex flex-col gap-1">

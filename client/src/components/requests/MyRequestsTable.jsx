@@ -1,4 +1,6 @@
-import { Table, Badge, Pagination } from 'flowbite-react';
+import { useState } from 'react';
+import { Table, Badge, Pagination, Button } from 'flowbite-react';
+import { cancelOtRequest } from '../../api/requestApi';
 
 /**
  * Table displaying user's requests with pagination.
@@ -8,8 +10,11 @@ import { Table, Badge, Pagination } from 'flowbite-react';
  * @param {Array} props.requests - List of request objects
  * @param {Object} props.pagination - { page, limit, total, totalPages }
  * @param {Function} props.onPageChange - (page: number) => void
+ * @param {Function} props.onRefresh - Callback to refresh data after OT cancel
  */
-export default function MyRequestsTable({ requests, pagination, onPageChange }) {
+export default function MyRequestsTable({ requests, pagination, onPageChange, onRefresh }) {
+    // State for cancel loading
+    const [cancelLoading, setCancelLoading] = useState(null);
     // Filter out invalid requests (defensive - backend always returns _id, but good practice)
     const safeRequests = (requests || []).filter(r => r?._id);
     const isEmpty = safeRequests.length === 0;
@@ -60,33 +65,67 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
     };
 
     /**
+     * Extract date string (YYYY-MM-DD) in VN timezone (GMT+7)
+     * Always parses input as Date object to handle UTC strings correctly
+     * 
+     * CRITICAL: Mongoose serializes Date fields to UTC ISO strings with Z suffix.
+     * String slicing would give wrong date for VN times 00:00-06:59 (UTC -7 hours).
+     * Example: "2026-02-09T18:00:00.000Z" is 01:00 VN on 2026-02-10, not 2026-02-09.
+     * 
+     * @param {string|Date} dateValue - ISO string or Date object
+     * @returns {string|null} Date in YYYY-MM-DD format or null
+     */
+    const getVnDateString = (dateValue) => {
+        if (!dateValue) return null;
+        
+        // Always parse as Date to handle all string formats (UTC Z, +07:00, no timezone)
+        // en-CA locale gives YYYY-MM-DD format directly
+        try {
+            return new Date(dateValue).toLocaleDateString('en-CA', {
+                timeZone: 'Asia/Ho_Chi_Minh'
+            });
+        } catch (err) {
+            console.warn('Failed to format date in VN timezone:', dateValue, err);
+            return null;
+        }
+    };
+
+    /**
      * Detect if request has cross-midnight checkout
-     * Uses checkInDate/checkOutDate if available, otherwise compare timestamps
+     * 
+     * Priority hierarchy:
+     * 1. Use checkInDate/checkOutDate (backend-computed, most reliable)
+     * 2. Compare timestamps in VN timezone (handles Date objects safely)
+     * 3. Compare checkout with request.date
+     * 
+     * Uses getVnDateString to avoid toISOString() UTC conversion bug
      */
     const isCrossMidnight = (req) => {
         if (req.type !== 'ADJUST_TIME') return false;
         if (!req.requestedCheckOutAt) return false;
         
-        // Prefer model fields (checkInDate, checkOutDate) if available
+        // P1: Prefer model fields (checkInDate, checkOutDate) - most reliable
         if (req.checkInDate && req.checkOutDate) {
             return req.checkOutDate > req.checkInDate;
         }
         
-        // Fallback: compare ISO date portions
+        // P2: Fallback to timestamp comparison (for legacy data)
         if (req.requestedCheckInAt && req.requestedCheckOutAt) {
-            // Guard against Date objects - ensure strings before slice
-            const checkInStr = typeof req.requestedCheckInAt === 'string' ? req.requestedCheckInAt : req.requestedCheckInAt.toISOString();
-            const checkOutStr = typeof req.requestedCheckOutAt === 'string' ? req.requestedCheckOutAt : req.requestedCheckOutAt.toISOString();
-            const checkInDay = checkInStr.slice(0, 10);
-            const checkOutDay = checkOutStr.slice(0, 10);
+            const checkInDay = getVnDateString(req.requestedCheckInAt);
+            const checkOutDay = getVnDateString(req.requestedCheckOutAt);
+            
+            // Guard: if conversion failed, can't determine
+            if (!checkInDay || !checkOutDay) return false;
+            
             return checkOutDay > checkInDay;
         }
         
-        // Checkout-only: compare with request.date
+        // P3: Checkout-only case
         if (req.date && req.requestedCheckOutAt) {
-            // Guard against Date objects
-            const checkOutStr = typeof req.requestedCheckOutAt === 'string' ? req.requestedCheckOutAt : req.requestedCheckOutAt.toISOString();
-            const checkOutDay = checkOutStr.slice(0, 10);
+            const checkOutDay = getVnDateString(req.requestedCheckOutAt);
+            
+            if (!checkOutDay) return false;
+            
             return checkOutDay > req.date;
         }
         
@@ -141,14 +180,23 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
     /**
      * Format time with date information for cross-midnight sessions
      * Shows clear date instead of confusing +1 badge
+     * 
+     * @param {string} isoString - ISO timestamp to format
+     * @param {boolean} isCrossMidnightFlag - Whether session crosses midnight
+     * @param {string} baseDate - Primary date (req.date)
+     * @param {string} fallbackDate - Fallback date (req.checkInDate) when baseDate is null
      */
-    const formatTimeWithDate = (isoString, isCrossMidnightFlag, baseDate) => {
+    const formatTimeWithDate = (isoString, isCrossMidnightFlag, baseDate, fallbackDate) => {
         if (!isoString) return '--:--';
         
         const time = formatTime(isoString);
-        if (!isCrossMidnightFlag || !baseDate) return time;
+        if (!isCrossMidnightFlag) return time;
         
-        const nextDay = addDaysToDate(baseDate, 1);
+        // Use baseDate or fallback to checkInDate (handles edge case of missing req.date)
+        const effectiveBase = baseDate || fallbackDate;
+        if (!effectiveBase) return time;
+        
+        const nextDay = addDaysToDate(effectiveBase, 1);
         if (nextDay) {
             const [, month, day] = nextDay.split('-');
             return `${time} (${day}/${month})`;
@@ -180,7 +228,36 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
         if (type === 'LEAVE') {
             return <Badge color="cyan">Nghỉ phép</Badge>;
         }
-        return <Badge color="purple">Điều chỉnh</Badge>;
+        if (type === 'OT_REQUEST') {
+            return <Badge color="purple">Đăng ký OT</Badge>;
+        }
+        return <Badge color="indigo">Điều chỉnh</Badge>;
+    };
+
+    /**
+     * Handle OT cancellation
+     */
+    const handleCancelOt = async (requestId, date) => {
+        const confirmMsg = `Bạn có chắc muốn hủy yêu cầu OT ngày ${formatDate(date)}?`;
+        
+        if (!window.confirm(confirmMsg)) return;
+        
+        setCancelLoading(requestId);
+        
+        try {
+            await cancelOtRequest(requestId);
+            alert('✅ Đã hủy yêu cầu OT');
+            
+            // Trigger refetch
+            if (onRefresh) {
+                onRefresh();
+            }
+        } catch (err) {
+            const errorMsg = err.response?.data?.message || 'Không thể hủy yêu cầu OT';
+            alert(`❌ ${errorMsg}`);
+        } finally {
+            setCancelLoading(null);
+        }
     };
 
     return (
@@ -194,11 +271,12 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                         <Table.HeadCell>Lý do</Table.HeadCell>
                         <Table.HeadCell>Trạng thái</Table.HeadCell>
                         <Table.HeadCell>Tạo lúc</Table.HeadCell>
+                        <Table.HeadCell>Thao tác</Table.HeadCell>
                     </Table.Head>
                     <Table.Body className="divide-y">
                         {isEmpty ? (
                             <Table.Row>
-                                <Table.Cell colSpan={6} className="text-center py-8 text-gray-500">
+                                <Table.Cell colSpan={7} className="text-center py-8 text-gray-500">
                                     Bạn chưa có yêu cầu nào
                                 </Table.Cell>
                             </Table.Row>
@@ -221,7 +299,7 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                                         )}
                                     </Table.Cell>
 
-                                    {/* Details (Time or Leave Type + Days) */}
+                                    {/* Details (Time or Leave Type + Days or OT Info) */}
                                     <Table.Cell className="whitespace-nowrap">
                                         {req.type === 'LEAVE' ? (
                                             <div className="flex flex-col gap-1">
@@ -232,13 +310,28 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                                                     {req.leaveDaysCount ?? 0} ngày làm việc
                                                 </span>
                                             </div>
+                                        ) : req.type === 'OT_REQUEST' ? (
+                                            <div className="text-sm space-y-1">
+                                                <div>
+                                                    <span className="text-gray-600">⏰ Dự kiến về:</span>
+                                                    <span className="ml-2 font-medium">{formatTime(req.estimatedEndTime)}</span>
+                                                </div>
+                                                {req.actualOtMinutes != null && (
+                                                    <div>
+                                                        <span className="text-gray-600">✅ OT thực tế:</span>
+                                                        <span className="ml-2 font-bold text-green-600">
+                                                            {Math.floor(req.actualOtMinutes / 60)}h {req.actualOtMinutes % 60}m
+                                                        </span>
+                                                    </div>
+                                                )}
+                                            </div>
                                         ) : (
                                             <div className="flex flex-col gap-1">
                                                 <span className="text-sm">
                                                     Vào: {formatTime(req.requestedCheckInAt)}
                                                 </span>
                                                 <span className="text-sm">
-                                                    Ra: {formatTimeWithDate(req.requestedCheckOutAt, isCrossMidnight(req), req.date)}
+                                                    Ra: {formatTimeWithDate(req.requestedCheckOutAt, isCrossMidnight(req), req.date, req.checkInDate)}
                                                 </span>
                                             </div>
                                         )}
@@ -257,6 +350,22 @@ export default function MyRequestsTable({ requests, pagination, onPageChange }) 
                                     {/* Created At */}
                                     <Table.Cell className="text-sm text-gray-500 whitespace-nowrap">
                                         {formatDateTime(req.createdAt)}
+                                    </Table.Cell>
+
+                                    {/* Actions */}
+                                    <Table.Cell>
+                                        {req.status === 'PENDING' && req.type === 'OT_REQUEST' ? (
+                                            <Button
+                                                size="xs"
+                                                color="failure"
+                                                onClick={() => handleCancelOt(req._id, req.date)}
+                                                disabled={cancelLoading === req._id}
+                                            >
+                                                {cancelLoading === req._id ? '...' : '🗑️ Hủy'}
+                                            </Button>
+                                        ) : (
+                                            <span className="text-gray-400 text-xs">—</span>
+                                        )}
                                     </Table.Cell>
                                 </Table.Row>
                             ))

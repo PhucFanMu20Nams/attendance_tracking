@@ -74,6 +74,7 @@ export default function RequestsPage() {
                         requests={requests}
                         pagination={pagination}
                         onPageChange={setPage}
+                        onRefresh={refetch}
                     />
                 )}
             </Card>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Table, Select, Spinner, Alert } from 'flowbite-react';
+import { Table, Select, Spinner, Alert, Badge } from 'flowbite-react';
 import client from '../api/client';
+import { getMyRequests } from '../api/requestApi';
 import { PageHeader, StatusBadge } from '../components/ui';
 
 /**
@@ -15,6 +16,8 @@ export default function MyAttendancePage() {
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    // Map of YYYY-MM-DD -> OT request object (most recent per date)
+    const [otRequestsByDate, setOtRequestsByDate] = useState({});
 
     // Get current month in GMT+7
     const today = new Date().toLocaleDateString('sv-SE', {
@@ -67,6 +70,52 @@ export default function MyAttendancePage() {
         return () => controller.abort();
     }, [fetchAttendance]);
 
+    /**
+     * Fetch all OT requests for the selected month by paginating through
+     * GET /requests/me (limit=100, hard cap=50 pages).
+     * Builds a date map where first-seen entry wins (descending createdAt → newest).
+     */
+    const fetchOtRequests = useCallback(async (signal) => {
+        const PAGE_LIMIT = 100;
+        const PAGE_CAP = 50;
+        const map = {};
+        try {
+            for (let page = 1; page <= PAGE_CAP; page++) {
+                if (signal?.aborted) return;
+                const res = await getMyRequests(
+                    { page, limit: PAGE_LIMIT },
+                    { signal }
+                );
+                const { items: reqItems = [], pagination = {} } = res.data ?? {};
+                for (const req of reqItems) {
+                    if (
+                        req.type === 'OT_REQUEST' &&
+                        typeof req.date === 'string' &&
+                        req.date.startsWith(selectedMonth)
+                    ) {
+                        // First seen = newest (API sorts by createdAt desc)
+                        if (!map[req.date]) map[req.date] = req;
+                    }
+                }
+                if (page >= (pagination.totalPages ?? 1)) break;
+            }
+            if (signal?.aborted) return;
+            setOtRequestsByDate(map);
+        } catch (err) {
+            if (err.name === 'CanceledError' || err.name === 'AbortError' || err?.code === 'ERR_CANCELED') return;
+            // Non-blocking: attendance table still renders
+            console.warn('[MyAttendancePage] OT request fetch failed:', err);
+            if (!signal?.aborted) setOtRequestsByDate({});
+        }
+    }, [selectedMonth]);
+
+    // Reload OT requests whenever selectedMonth changes
+    useEffect(() => {
+        const controller = new AbortController();
+        fetchOtRequests(controller.signal);
+        return () => controller.abort();
+    }, [fetchOtRequests]);
+
     // Format time for display (GMT+7)
     const formatTime = (isoString) => {
         if (!isoString) return '--:--';
@@ -77,15 +126,26 @@ export default function MyAttendancePage() {
         });
     };
 
-    // Format date for display
+    // Format date for display (timezone-safe: always render GMT+7 calendar date)
     const formatDate = (dateStr) => {
         const date = new Date(dateStr + 'T00:00:00+07:00');
         return date.toLocaleDateString('vi-VN', {
+            timeZone: 'Asia/Ho_Chi_Minh',
             weekday: 'short',
             day: '2-digit',
             month: '2-digit',
         });
     };
+
+    /** Map OT request status → Flowbite color + Vietnamese label */
+    const OT_STATUS_MAP = {
+        APPROVED: { color: 'success', label: 'Đã duyệt' },
+        PENDING: { color: 'warning', label: 'Chờ duyệt' },
+        REJECTED: { color: 'failure', label: 'Từ chối' },
+    };
+
+    const getOtBadgeProps = (status) =>
+        OT_STATUS_MAP[status] ?? { color: 'gray', label: status ?? '' };
 
 
 
@@ -162,13 +222,30 @@ export default function MyAttendancePage() {
                                         )}
                                     </Table.Cell>
                                     <Table.Cell>
-                                        {item.otMinutes > 0 ? (
-                                            <span className="text-green-600">
-                                                {item.otMinutes} phút
-                                            </span>
-                                        ) : (
-                                            <span className="text-gray-400">-</span>
-                                        )}
+                                        {(() => {
+                                            const otReq = otRequestsByDate[item.date];
+                                            const hasMinutes = item.otMinutes > 0;
+                                            if (!hasMinutes && !otReq) {
+                                                return <span className="text-gray-400">-</span>;
+                                            }
+                                            const { color, label } = otReq
+                                                ? getOtBadgeProps(otReq.status)
+                                                : {};
+                                            return (
+                                                <span className="flex flex-wrap items-center gap-1">
+                                                    {hasMinutes && (
+                                                        <span className="text-green-600">
+                                                            {item.otMinutes} phút
+                                                        </span>
+                                                    )}
+                                                    {otReq && (
+                                                        <Badge color={color} data-testid="ot-request-badge">
+                                                            {label}
+                                                        </Badge>
+                                                    )}
+                                                </span>
+                                            );
+                                        })()}
                                     </Table.Cell>
                                 </Table.Row>
                             ))}
