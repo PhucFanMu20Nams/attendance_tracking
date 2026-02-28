@@ -14,7 +14,7 @@
  * - State Transition Testing: Request status flow
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import app from '../src/app.js';
@@ -26,8 +26,11 @@ import bcrypt from 'bcrypt';
 
 let adminToken, managerToken, employeeToken, employee2Token;
 let teamId, employeeId, employee2Id, managerId;
+const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
 
 beforeAll(async () => {
+    vi.setSystemTime(FIXED_TIME);
+
     await mongoose.connect(process.env.MONGO_URI?.replace(/\/[^/]+$/, '/fullstack_test_db')
         || 'mongodb://localhost:27017/fullstack_test_db');
 
@@ -112,6 +115,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+    vi.useRealTimers();
+
     await User.deleteMany({});
     await Team.deleteMany({});
     await Attendance.deleteMany({});

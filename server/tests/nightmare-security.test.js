@@ -18,7 +18,7 @@
  * - Error Guessing: Common security implementation mistakes
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import app from '../src/app.js';
@@ -31,8 +31,11 @@ import bcrypt from 'bcrypt';
 let adminToken, managerTeam1Token, managerTeam2Token, employeeTeam1Token, employeeTeam2Token;
 let team1Id, team2Id;
 let employeeTeam1Id, employeeTeam2Id, managerTeam1Id;
+const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
 
 beforeAll(async () => {
+    vi.setSystemTime(FIXED_TIME);
+
     // Use separate database for nightmare tests
     await mongoose.connect(process.env.MONGO_URI?.replace(/\/[^/]+$/, '/nightmare_security_test_db')
         || 'mongodb://localhost:27017/nightmare_security_test_db');
@@ -136,6 +139,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+    vi.useRealTimers();
+
     await User.deleteMany({});
     await Team.deleteMany({});
     await Attendance.deleteMany({});

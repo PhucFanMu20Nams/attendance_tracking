@@ -14,7 +14,7 @@
  * - Reliability: Race condition handling, overlap prevention
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import app from '../src/app.js';
@@ -31,8 +31,11 @@ import bcrypt from 'bcrypt';
 
 let adminToken, managerToken, employeeToken;
 let teamId, employeeId, managerId;
+const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
 
 beforeAll(async () => {
+    vi.setSystemTime(FIXED_TIME);
+
     // Use separate database for leave tests
     await mongoose.connect(
         process.env.MONGO_URI?.replace(/\/[^/]+$/, '/leave_request_test_db')
@@ -104,6 +107,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+    vi.useRealTimers();
+
     await User.deleteMany({});
     await Team.deleteMany({});
     await Request.deleteMany({});

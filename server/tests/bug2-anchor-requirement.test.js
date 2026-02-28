@@ -14,6 +14,7 @@ import Team from '../src/models/Team.js';
 import Request from '../src/models/Request.js';
 import Attendance from '../src/models/Attendance.js';
 import bcrypt from 'bcrypt';
+import { recentWeekday } from './testDateHelper.js';
 
 let managerToken;
 let employeeId;
@@ -71,7 +72,7 @@ beforeEach(async () => {
 });
 
 describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
-    const weekday = '2026-02-05'; // Thursday (within 7-day window)
+    const weekday = recentWeekday(2);
 
     describe('Corrupt Request Scenarios (Missing Anchor)', () => {
         it('should reject corrupt checkIn-only request (missing requestedCheckInAt + no attendance)', async () => {
@@ -190,7 +191,7 @@ describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
     describe('Rule 2 Now Runs for ALL Requests', () => {
         it('should reject checkIn-only request exceeding submission window', async () => {
             // Create old attendance (9 days ago - exceeds 7-day window)
-            const oldDate = '2026-01-28'; // Wednesday, 9 days before 2026-02-06
+            const oldDate = recentWeekday(10);
 
             const validRequest = await Request.create({
                 userId: employeeId,
@@ -214,7 +215,7 @@ describe('Bug #2 Fix: Require anchorTime for ALL ADJUST_TIME requests', () => {
 
         it('should accept checkIn-only request within submission window', async () => {
             // Create recent request (5 days ago - within 7-day window)
-            const recentDate = '2026-02-04'; // Wednesday, 6 days before 2026-02-10
+            const recentDate = recentWeekday(3);
 
             const validRequest = await Request.create({
                 userId: employeeId,

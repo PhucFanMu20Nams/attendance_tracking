@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import app from '../src/app.js';
@@ -10,6 +10,7 @@ import bcrypt from 'bcrypt';
 import { getTodayDateKey } from '../src/utils/dateUtils.js';
 
 describe('OT Request API Integration', () => {
+  const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
   let employeeToken;
   let employeeId;
   let managerToken;
@@ -17,6 +18,8 @@ describe('OT Request API Integration', () => {
   let testTeamId;
 
   beforeAll(async () => {
+    vi.setSystemTime(FIXED_TIME);
+
     // Connect to test database
     await mongoose.connect(
       process.env.MONGO_URI?.replace(/\/[^/]+$/, '/ot_request_test') || 
@@ -25,6 +28,8 @@ describe('OT Request API Integration', () => {
   });
 
   afterAll(async () => {
+    vi.useRealTimers();
+
     // Clean up and disconnect
     await User.deleteMany({ employeeCode: /^TEST_OT/ });
     await Request.deleteMany({});

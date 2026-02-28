@@ -14,6 +14,7 @@ import User from '../src/models/User.js';
 import Team from '../src/models/Team.js';
 import Request from '../src/models/Request.js';
 import bcrypt from 'bcrypt';
+import { recentWeekday } from './testDateHelper.js';
 
 let employeeToken;
 let employeeId;
@@ -58,7 +59,7 @@ beforeEach(async () => {
 });
 
 describe('Bug #1 Fix: Timezone Validation for Date Objects', () => {
-    const weekday = '2026-02-05'; // Thursday (within 7-day submission window)
+    const weekday = recentWeekday(2);
 
     describe('String Inputs with Timezone', () => {
         it('should accept ISO string with +HH:MM timezone', async () => {
@@ -200,7 +201,7 @@ describe('Bug #1 Fix: Timezone Validation for Date Objects', () => {
 });
 
 describe('Bug #1 Defense: Date Object Compatibility', () => {
-    const weekday = '2026-02-05'; // Within 7-day submission window
+    const weekday = recentWeekday(2);
 
     it('should document that Express JSON parser converts ISO strings to strings, not Date objects', () => {
         // This test documents the current behavior:

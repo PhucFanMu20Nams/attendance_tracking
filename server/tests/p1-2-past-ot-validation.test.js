@@ -5,9 +5,10 @@ import Request from '../src/models/Request.js';
 import { createOtRequest } from '../src/services/requestService.js';
 import { getDateKey } from '../src/utils/dateUtils.js';
 
+const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
+
 describe('P1-2: Past OT Time Validation (STRICT)', () => {
   let testUser;
-  let originalDateNow;
 
   beforeAll(async () => {
     // Connect to test database
@@ -15,9 +16,6 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
       process.env.MONGO_URI?.replace(/\/[^/]+$/, '/p1_2_test') || 
       'mongodb://localhost:27017/p1_2_test'
     );
-
-    // Save original Date.now
-    originalDateNow = Date.now;
 
     // Create test user with proper schema
     const timestamp = Date.now();
@@ -30,11 +28,13 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
       role: 'EMPLOYEE',
       isActive: true
     });
+
+    // Keep default test timeline deterministic.
+    vi.setSystemTime(FIXED_TIME);
   });
 
   afterAll(async () => {
-    // Restore original Date.now
-    Date.now = originalDateNow;
+    vi.useRealTimers();
 
     // Cleanup
     if (testUser) {
@@ -49,16 +49,14 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
   beforeEach(async () => {
     // Clean requests before each test
     await Request.deleteMany({ userId: testUser._id });
-    
-    // Restore original Date.now before each test
-    Date.now = originalDateNow;
+    vi.setSystemTime(FIXED_TIME);
   });
 
   describe('STRICT Policy: Block Retroactive Same-Day OT', () => {
     it('should REJECT OT request when estimatedEndTime is in the past', async () => {
       // Mock current time: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z'); // 23:00 GMT+7
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -77,7 +75,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should REJECT OT request when estimatedEndTime equals current time', async () => {
       // Mock current time: 2026-02-10 19:00:00 GMT+7
       const mockNow = new Date('2026-02-10T12:00:00Z'); // 19:00 GMT+7
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -96,7 +94,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should ALLOW OT request when estimatedEndTime is in the future', async () => {
       // Mock current time: 2026-02-10 16:00:00 GMT+7
       const mockNow = new Date('2026-02-10T09:00:00Z'); // 16:00 GMT+7
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -117,7 +115,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should ALLOW OT request for future dates regardless of time', async () => {
       // Mock current time: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z'); // 23:00 GMT+7
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       // Request OT for tomorrow at 19:00 (any time is OK for future dates, must be valid OT period)
       const tomorrow = '2026-02-11';
@@ -139,7 +137,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should provide helpful error message with timestamps', async () => {
       // Mock current time: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z'); // 23:00 GMT+7
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       const pastTime = new Date('2026-02-10T11:00:00Z'); // 18:00 GMT+7
@@ -166,7 +164,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should REJECT when estimatedEndTime is 1 second ago', async () => {
       // Mock current time: 2026-02-10 19:00:01 GMT+7
       const mockNow = new Date('2026-02-10T12:00:01Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -185,7 +183,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should ALLOW when estimatedEndTime is 1 second in future', async () => {
       // Mock current time: 2026-02-10 19:00:00 GMT+7
       const mockNow = new Date('2026-02-10T12:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -205,7 +203,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should REJECT late evening OT request for earlier time same day', async () => {
       // Mock current time: 2026-02-10 23:59:00 GMT+7
       const mockNow = new Date('2026-02-10T16:59:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -224,7 +222,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should ALLOW early morning OT request for evening same day', async () => {
       // Mock current time: 2026-02-10 08:00:00 GMT+7
       const mockNow = new Date('2026-02-10T01:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -246,7 +244,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('Scenario A: Employee requests OT at 16:00 for 19:00 same day - SHOULD ALLOW', async () => {
       // Current: 2026-02-10 16:00:00 GMT+7
       const mockNow = new Date('2026-02-10T09:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       const plannedEndTime = new Date('2026-02-10T12:00:00Z'); // 19:00 GMT+7
@@ -264,7 +262,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('Scenario B: Employee tries to log OT at 23:00 for 18:00 same day - SHOULD REJECT', async () => {
       // Current: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       const pastEndTime = new Date('2026-02-10T11:00:00Z'); // 18:00 GMT+7
@@ -281,7 +279,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('Scenario C: Employee at 23:00 requests OT for 23:30 same day - SHOULD ALLOW', async () => {
       // Current: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       const futureEndTime = new Date('2026-02-10T16:30:00Z'); // 23:30 GMT+7
@@ -298,7 +296,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('Scenario D: Employee at 10:00 requests OT for tomorrow 19:00 - SHOULD ALLOW', async () => {
       // Current: 2026-02-10 10:00:00 GMT+7
       const mockNow = new Date('2026-02-10T03:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const tomorrow = '2026-02-11';
       const tomorrowEndTime = new Date('2026-02-11T12:00:00Z'); // 19:00 GMT+7
@@ -318,7 +316,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should allow auto-extend when new estimatedEndTime is still in future', async () => {
       // Current: 2026-02-10 16:00:00 GMT+7
       const mockNow = new Date('2026-02-10T09:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -334,7 +332,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
 
       // Move time forward: now 17:00
       const mockNowLater = new Date('2026-02-10T10:00:00Z');
-      Date.now = vi.fn(() => mockNowLater.getTime());
+      vi.setSystemTime(mockNowLater);
 
       // Auto-extend to 20:00 (still in future)
       const extendedEndTime = new Date('2026-02-10T13:00:00Z');
@@ -351,7 +349,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should REJECT auto-extend when new estimatedEndTime is in past', async () => {
       // Current: 2026-02-10 16:00:00 GMT+7
       const mockNow = new Date('2026-02-10T09:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -365,7 +363,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
 
       // Move time forward: now 20:00 (past the initial end time)
       const mockNowLater = new Date('2026-02-10T13:00:00Z');
-      Date.now = vi.fn(() => mockNowLater.getTime());
+      vi.setSystemTime(mockNowLater);
 
       // Try to extend to 19:00 (now in past)
       const pastEndTime = new Date('2026-02-10T12:00:00Z');
@@ -383,7 +381,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should check past time BEFORE other validations', async () => {
       // Current: 2026-02-10 23:00:00 GMT+7
       const mockNow = new Date('2026-02-10T16:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -403,7 +401,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should pass past time check, then validate OT period', async () => {
       // Current: 2026-02-10 16:00:00 GMT+7
       const mockNow = new Date('2026-02-10T09:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -425,7 +423,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should handle GMT+7 timezone correctly in validation', async () => {
       // Current: 2026-02-10 18:00:00 GMT+7 = 2026-02-10T11:00:00Z
       const mockNow = new Date('2026-02-10T11:00:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow);
       
@@ -445,7 +443,7 @@ describe('P1-2: Past OT Time Validation (STRICT)', () => {
     it('should reject correctly across date boundaries (before midnight)', async () => {
       // Current: 2026-02-10 23:59:00 GMT+7 = 2026-02-10T16:59:00Z
       const mockNow = new Date('2026-02-10T16:59:00Z');
-      Date.now = vi.fn(() => mockNow.getTime());
+      vi.setSystemTime(mockNow);
 
       const today = getDateKey(mockNow); // Should be 2026-02-10
       

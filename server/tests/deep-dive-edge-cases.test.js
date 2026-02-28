@@ -22,9 +22,11 @@ import Team from '../src/models/Team.js';
 import Attendance from '../src/models/Attendance.js';
 import Request from '../src/models/Request.js';
 import bcrypt from 'bcrypt';
+import { recentDistinctWeekdays } from './testDateHelper.js';
 
 let adminToken, managerToken, employeeToken;
 let teamId, employeeId;
+const [overlapDate, raceDate, tzDate, transitionDate] = recentDistinctWeekdays(4, 2);
 
 beforeAll(async () => {
     // Use separate database for deep dive tests
@@ -235,7 +237,7 @@ describe('Phantom Date (Ngày Ma) - Invalid Calendar Dates', () => {
 // OVERLAPPING REQUESTS - Last Write Wins
 // ============================================
 describe('Overlapping Requests - Last Write Wins Bug', () => {
-    const testDate = '2026-02-04'; // Wednesday, 6 days ago (within 7-day window)
+    const testDate = overlapDate;
 
     beforeEach(async () => {
         await Request.deleteMany({});
@@ -364,7 +366,7 @@ describe('Overlapping Requests - Last Write Wins Bug', () => {
 // ============================================
 describe('Race Condition - Concurrent Approve Operations', () => {
     let testRequestId;
-    const testDate = '2026-02-05'; // Thursday, 5 days ago (within 7-day window)
+    const testDate = raceDate;
 
     beforeEach(async () => {
         await Request.deleteMany({});
@@ -463,7 +465,7 @@ describe('Race Condition - Concurrent Approve Operations', () => {
 // TIMEZONE BOUNDARY - UTC vs GMT+7
 // ============================================
 describe('Timezone Boundary - UTC vs GMT+7 Edge Cases', () => {
-    const testDate = '2026-02-04'; // Wednesday, 6 days ago (within 7-day window)
+    const testDate = tzDate;
 
     afterEach(async () => {
         await Request.deleteMany({});
@@ -654,7 +656,7 @@ describe('Type Coercion Bypass Attempts', () => {
 // ============================================
 describe('State Transition - Request Status Changes', () => {
     let requestId;
-    const testDate = '2026-02-06'; // Friday, 4 days ago (within 7-day window)
+    const testDate = transitionDate;
 
     beforeEach(async () => {
         await Request.deleteMany({});

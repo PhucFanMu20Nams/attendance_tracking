@@ -5,7 +5,7 @@
  * - Rule 2: Submission window (now - checkIn ≤ ADJUST_REQUEST_MAX_DAYS)
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import app from '../src/app.js';
@@ -17,8 +17,11 @@ import bcrypt from 'bcrypt';
 
 let employeeToken;
 let employeeId;
+const FIXED_TIME = new Date('2026-02-10T03:00:00.000Z');
 
 beforeAll(async () => {
+    vi.setSystemTime(FIXED_TIME);
+
     await mongoose.connect(process.env.MONGO_URI?.replace(/\/[^/]+$/, '/step5_2rule_test_db')
         || 'mongodb://localhost:27017/step5_2rule_test_db');
 
@@ -48,6 +51,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+    vi.useRealTimers();
+
     await User.deleteMany({});
     await Team.deleteMany({});
     await Attendance.deleteMany({});
