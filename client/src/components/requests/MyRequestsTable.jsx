@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Table, Badge, Pagination, Button } from 'flowbite-react';
 import { cancelOtRequest } from '../../api/requestApi';
+import { addDaysToDate, getVnDateString } from '../../utils/dateDisplay';
 
 /**
  * Table displaying user's requests with pagination.
@@ -65,32 +66,6 @@ export default function MyRequestsTable({ requests, pagination, onPageChange, on
     };
 
     /**
-     * Extract date string (YYYY-MM-DD) in VN timezone (GMT+7)
-     * Always parses input as Date object to handle UTC strings correctly
-     * 
-     * CRITICAL: Mongoose serializes Date fields to UTC ISO strings with Z suffix.
-     * String slicing would give wrong date for VN times 00:00-06:59 (UTC -7 hours).
-     * Example: "2026-02-09T18:00:00.000Z" is 01:00 VN on 2026-02-10, not 2026-02-09.
-     * 
-     * @param {string|Date} dateValue - ISO string or Date object
-     * @returns {string|null} Date in YYYY-MM-DD format or null
-     */
-    const getVnDateString = (dateValue) => {
-        if (!dateValue) return null;
-        
-        // Always parse as Date to handle all string formats (UTC Z, +07:00, no timezone)
-        // en-CA locale gives YYYY-MM-DD format directly
-        try {
-            return new Date(dateValue).toLocaleDateString('en-CA', {
-                timeZone: 'Asia/Ho_Chi_Minh'
-            });
-        } catch (err) {
-            console.warn('Failed to format date in VN timezone:', dateValue, err);
-            return null;
-        }
-    };
-
-    /**
      * Detect if request has cross-midnight checkout
      * 
      * Priority hierarchy:
@@ -130,51 +105,6 @@ export default function MyRequestsTable({ requests, pagination, onPageChange, on
         }
         
         return false;
-    };
-
-    /**
-     * Add days to a date string (timezone-safe, pure string manipulation)
-     * Handles month/year boundaries correctly
-     * Returns null if input is invalid
-     */
-    const addDaysToDate = (dateStr, days) => {
-        if (!dateStr || typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-            return null;
-        }
-        
-        const [year, month, day] = dateStr.split('-').map(Number);
-        
-        if (isNaN(year) || isNaN(month) || isNaN(day)) {
-            return null;
-        }
-        
-        if (month < 1 || month > 12 || day < 1 || day > 31) {
-            return null;
-        }
-        
-        const daysInMonth = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        
-        const isLeapYear = (y) => (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
-        if (isLeapYear(year)) {
-            daysInMonth[1] = 29;
-        }
-        
-        let newDay = day + days;
-        let newMonth = month;
-        let newYear = year;
-        
-        while (newDay > daysInMonth[newMonth - 1]) {
-            newDay -= daysInMonth[newMonth - 1];
-            newMonth++;
-            
-            if (newMonth > 12) {
-                newMonth = 1;
-                newYear++;
-                daysInMonth[1] = isLeapYear(newYear) ? 29 : 28;
-            }
-        }
-        
-        return `${newYear}-${String(newMonth).padStart(2, '0')}-${String(newDay).padStart(2, '0')}`;
     };
 
     /**
