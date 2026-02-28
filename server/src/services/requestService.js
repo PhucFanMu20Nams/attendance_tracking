@@ -157,7 +157,7 @@ export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, 
   // Issue #5: Block weekend/holiday requests early for better UX
   // (Same validation as approveRequest, but fail-fast at creation)
   const month = date.substring(0, 7);
-  const holidayDates = await getHolidayDatesForMonth(month);
+  const holidayDates = await getHolidayDatesForMonth(month, null);
   if (isWeekend(date) || holidayDates.has(date)) {
     const error = new Error('Cannot create time adjustment request for weekend or holiday');
     error.statusCode = 400;
@@ -415,13 +415,27 @@ const buildPendingFilter = async (user) => {
       throw error;
     }
 
-    // Find all users in the same team (exclude soft-deleted users)
+    // Find all users in the same team (exclude soft-deleted and inactive users)
     // PATCH: Use $or to handle legacy users without deletedAt field (pre-migration)
+    // Fix #4: Also exclude deactivated users
+    // Fix #6: Add legacy fallback for isActive field (pre-migration users)
     const teamMembers = await User.find({
       teamId: user.teamId,
-      $or: [
-        { deletedAt: null },              // Migrated users (not deleted)
-        { deletedAt: { $exists: false } }  // Legacy users (no field yet)
+      $and: [
+        {
+          // Active users OR legacy users without isActive field (treat as active)
+          $or: [
+            { isActive: true },
+            { isActive: { $exists: false } }
+          ]
+        },
+        {
+          // Not soft-deleted OR legacy users without deletedAt field
+          $or: [
+            { deletedAt: null },
+            { deletedAt: { $exists: false } }
+          ]
+        }
       ]
     }).select('_id');
     const teamMemberIds = teamMembers.map(member => member._id);
@@ -482,12 +496,34 @@ export const getPendingRequests = async (user, options = {}) => {
  */
 async function approveRequestCore(requestId, approver, session) {
   // STEP 1: Fetch request (with or without session)
-  const query = Request.findById(requestId).populate('userId', 'teamId');
+  // Fix #5: Populate isActive and deletedAt to validate user status
+  const query = Request.findById(requestId).populate('userId', 'teamId isActive deletedAt');
   const existingRequest = session ? await query.session(session) : await query;
 
   if (!existingRequest) {
     const error = new Error('Request not found');
     error.statusCode = 404;
+    throw error;
+  }
+
+  // Fix #5: Validate user is active and not deleted
+  if (!existingRequest.userId) {
+    const error = new Error('Request user not found');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Fix #7: Use explicit false check to support legacy users without isActive field
+  // (!undefined === true) would incorrectly block legacy users, use (=== false) instead
+  if (existingRequest.userId.isActive === false) {
+    const error = new Error('Cannot approve request for inactive user');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  if (existingRequest.userId.deletedAt) {
+    const error = new Error('Cannot approve request for deleted user');
+    error.statusCode = 400;
     throw error;
   }
 
@@ -640,7 +676,7 @@ async function approveRequestCore(requestId, approver, session) {
   if (updatedRequest.type === 'ADJUST_TIME') {
     const requestDate = updatedRequest.date;
     const month = requestDate.substring(0, 7);
-    const holidayDates = await getHolidayDatesForMonth(month);
+    const holidayDates = await getHolidayDatesForMonth(month, session);
 
     if (isWeekend(requestDate) || holidayDates.has(requestDate)) {
       const error = new Error('Cannot approve time adjustment request for weekend/holiday');
@@ -706,12 +742,34 @@ export const approveRequest = async (requestId, approver) => {
  */
 async function rejectRequestCore(requestId, rejector, session) {
   // STEP 1: Fetch request (with or without session)
-  const query = Request.findById(requestId).populate('userId', 'teamId');
+  // Fix #5: Populate isActive and deletedAt to validate user status
+  const query = Request.findById(requestId).populate('userId', 'teamId isActive deletedAt');
   const existingRequest = session ? await query.session(session) : await query;
 
   if (!existingRequest) {
     const error = new Error('Request not found');
     error.statusCode = 404;
+    throw error;
+  }
+
+  // Fix #5: Validate user is active and not deleted
+  if (!existingRequest.userId) {
+    const error = new Error('Request user not found');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  // Fix #7: Use explicit false check to support legacy users without isActive field
+  // (!undefined === true) would incorrectly block legacy users, use (=== false) instead
+  if (existingRequest.userId.isActive === false) {
+    const error = new Error('Cannot reject request for inactive user');
+    error.statusCode = 400;
+    throw error;
+  }
+  
+  if (existingRequest.userId.deletedAt) {
+    const error = new Error('Cannot reject request for deleted user');
+    error.statusCode = 400;
     throw error;
   }
 

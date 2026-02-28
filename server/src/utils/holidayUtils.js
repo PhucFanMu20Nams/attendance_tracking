@@ -40,10 +40,11 @@ function validateMonthFormat(month) {
 /**
  * Get holiday dates for a specific month as a Set.
  * @param {string} month - "YYYY-MM" (zero-padded, 01-12)
+ * @param {Object} [session] - Optional MongoDB session for transactions
  * @returns {Promise<Set<string>>} Set of date strings "YYYY-MM-DD"
  * @throws {Error} if month format is invalid
  */
-export async function getHolidayDatesForMonth(month) {
+export async function getHolidayDatesForMonth(month, session = null) {
     // Defensive validation per RULES.md and API_SPEC.md
     const validMonth = validateMonthFormat(month);
 
@@ -57,9 +58,12 @@ export async function getHolidayDatesForMonth(month) {
     const nextMonthStart = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`;
 
     // Per API_SPEC.md: "Never return raw DB objects" - exclude _id
-    const holidays = await Holiday.find({
+    // Support transactions if session is provided
+    const query = Holiday.find({
         date: { $gte: startDate, $lt: nextMonthStart }
     }).select('date -_id').lean();
+    
+    const holidays = session ? await query.session(session) : await query;
 
     return new Set(holidays.map(h => h.date));
 }
