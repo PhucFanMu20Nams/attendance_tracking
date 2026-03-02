@@ -352,7 +352,7 @@ describe('Decision Table - Request Time Validation', () => {
      * Expected: 201 CREATED (Policy A: True cross-midnight support)
      */
     it('Rule 5a: Cross-midnight within grace → 201', async () => {
-        const { checkInDate, checkOutDate } = recentCrossMidnightPair(4);
+        const { checkInDate, checkOutDate } = recentCrossMidnightPair(6);
         
         const res = await request(app)
             .post('/api/requests')
