@@ -246,6 +246,27 @@ async function approveRequestCore(requestId, approver, session) {
     }
   }
 
+  // OT_REQUEST invariant: request must be submitted/extended before actual checkout.
+  if (existingRequest.type === 'OT_REQUEST') {
+    const attendanceQuery = Attendance.findOne({
+      userId: existingRequest.userId._id,
+      date: existingRequest.date
+    }).select('checkOutAt otApproved').lean();
+    const attendance = session ? await attendanceQuery.session(session) : await attendanceQuery;
+
+    // Allow approval when there is no attendance yet (future/pre-checkin)
+    // or attendance exists but checkout has not happened.
+    if (attendance?.checkOutAt) {
+      const requestEffectiveTime = new Date(existingRequest.updatedAt || existingRequest.createdAt);
+      const checkoutTime = new Date(attendance.checkOutAt);
+      if (requestEffectiveTime > checkoutTime) {
+        const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+  }
+
   // STEP 3: Revalidate ADJUST_TIME requests (defense-in-depth)
   if (existingRequest.type === 'ADJUST_TIME') {
     // Validate checkIn is on request.date
@@ -652,4 +673,3 @@ async function updateAttendanceFromRequest(request, session = null) {
 export { createAdjustTimeRequest } from './adjustTimeService.js';
 export { createLeaveRequest, getApprovedLeaveDates } from './leaveService.js';
 export { createOtRequest, cancelOtRequest } from './otService.js';
-

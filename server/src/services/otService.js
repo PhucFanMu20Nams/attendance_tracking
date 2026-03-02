@@ -169,6 +169,19 @@ export const createOtRequest = async (userId, requestData) => {
     throw error;
   }
 
+  // TOCTOU mitigation: re-check checkout state immediately before mutating Request.
+  // This narrows (but cannot fully eliminate) the race window across collections.
+  const alreadyCheckedOut = await Attendance.exists({
+    userId,
+    date,
+    checkOutAt: { $ne: null }
+  });
+  if (alreadyCheckedOut) {
+    const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+    error.statusCode = 400;
+    throw error;
+  }
+
   // D2: Auto-extend - Check if PENDING request exists for same date (ATOMIC FIX)
   // Legacy compatibility: keep checkInDate branch for historical data reads.
   const existingRequest = await Request.findOneAndUpdate(
