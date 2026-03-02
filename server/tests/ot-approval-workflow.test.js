@@ -462,6 +462,94 @@ describe('OT Approval Workflow Integration', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  // APPROVE INVARIANT: Request must be before checkout
+  // ═══════════════════════════════════════════════════════════════
+
+  describe('Approve Invariant: OT request timing vs checkout', () => {
+    it('should reject approval when request updatedAt is after checkout', async () => {
+      // Step 1: Check in
+      vi.setSystemTime(new Date('2026-02-10T01:30:00.000Z')); // 08:30 GMT+7
+      const ciRes = await checkIn();
+      expect(ciRes.status).toBe(200);
+
+      // Step 2: Create OT request (PENDING)
+      vi.setSystemTime(new Date('2026-02-10T03:00:00.000Z')); // 10:00 GMT+7
+      const otRes = await createOtReq(TODAY, `${TODAY}T19:00:00+07:00`, 'OT before checkout');
+      expect(otRes.status).toBe(201);
+      const requestId = otRes.body.request._id;
+
+      // Step 3: Checkout
+      vi.setSystemTime(new Date('2026-02-10T10:30:00.000Z')); // 17:30 GMT+7
+      const coRes = await checkOut();
+      expect(coRes.status).toBe(200);
+
+      // Step 4: Force updatedAt to after checkout (simulate late extend/race)
+      const requestObjectId = new mongoose.Types.ObjectId(requestId);
+      const lateTs = new Date('2026-02-10T11:30:00.000Z'); // 18:30 GMT+7
+      await Request.collection.updateOne(
+        { _id: requestObjectId },
+        { $set: { updatedAt: lateTs } }
+      );
+      const seeded = await Request.findById(requestId).lean();
+      expect(new Date(seeded.updatedAt).getTime()).toBe(lateTs.getTime());
+
+      // Step 5: Approve must be rejected by invariant
+      vi.setSystemTime(new Date('2026-02-10T11:31:00.000Z'));
+      const approveRes = await request(app)
+        .post(`/api/requests/${requestId}/approve`)
+        .set('Authorization', `Bearer ${managerToken}`);
+      expect(approveRes.status).toBe(400);
+      expect(approveRes.body.message).toContain('checkout');
+
+      // Step 6: Request remains pending, otApproved remains false
+      const requestAfter = await Request.findById(requestId).lean();
+      expect(requestAfter.status).toBe('PENDING');
+      const attAfter = await Attendance.findOne({ userId: employeeId, date: TODAY }).lean();
+      expect(attAfter.otApproved).toBe(false);
+    });
+
+    it('should allow approval when request updatedAt is before or equal checkout', async () => {
+      // Step 1: Check in
+      vi.setSystemTime(new Date('2026-02-10T01:30:00.000Z')); // 08:30 GMT+7
+      const ciRes = await checkIn();
+      expect(ciRes.status).toBe(200);
+
+      // Step 2: Create OT request (PENDING)
+      vi.setSystemTime(new Date('2026-02-10T03:00:00.000Z')); // 10:00 GMT+7
+      const otRes = await createOtReq(TODAY, `${TODAY}T19:00:00+07:00`, 'OT valid timing');
+      expect(otRes.status).toBe(201);
+      const requestId = otRes.body.request._id;
+
+      // Step 3: Checkout later
+      vi.setSystemTime(new Date('2026-02-10T11:00:00.000Z')); // 18:00 GMT+7
+      const coRes = await checkOut();
+      expect(coRes.status).toBe(200);
+
+      // Step 4: Force updatedAt to before checkout
+      const requestObjectId = new mongoose.Types.ObjectId(requestId);
+      const earlyTs = new Date('2026-02-10T10:00:00.000Z'); // 17:00 GMT+7
+      await Request.collection.updateOne(
+        { _id: requestObjectId },
+        { $set: { updatedAt: earlyTs } }
+      );
+      const seeded = await Request.findById(requestId).lean();
+      expect(new Date(seeded.updatedAt).getTime()).toBe(earlyTs.getTime());
+
+      // Step 5: Approve succeeds
+      vi.setSystemTime(new Date('2026-02-10T11:01:00.000Z'));
+      const approveRes = await request(app)
+        .post(`/api/requests/${requestId}/approve`)
+        .set('Authorization', `Bearer ${managerToken}`);
+      expect(approveRes.status).toBe(200);
+      expect(approveRes.body.request.status).toBe('APPROVED');
+
+      // Step 6: otApproved side-effect remains intact
+      const attAfter = await Attendance.findOne({ userId: employeeId, date: TODAY }).lean();
+      expect(attAfter.otApproved).toBe(true);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   // VALIDATION TESTS
   // ═══════════════════════════════════════════════════════════════
 
