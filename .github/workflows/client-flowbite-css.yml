@@ -1,0 +1,37 @@
+name: client-flowbite-css
+
+on:
+  pull_request:
+    paths:
+      - "client/**"
+      - ".github/workflows/client-flowbite-css.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "client/**"
+      - ".github/workflows/client-flowbite-css.yml"
+
+jobs:
+  flowbite-css-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Flowbite CSS classes are present
+        run: npm run test:flowbite-css
