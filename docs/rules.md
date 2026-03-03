@@ -1,4 +1,4 @@
-# Rules — Attendance Logic (v2.6)
+# Rules — Attendance Logic (v2.7)
 
 Timezone: Asia/Ho_Chi_Minh (GMT+7)  
 All dateKey calculations MUST use GMT+7.
@@ -101,6 +101,9 @@ Else 0.
 If checkOutAt exists:
 - If checkOutAt time > 17:31:
   - otMinutes = minutes between 17:31 and checkOutAt (excluding lunch already handled in workMinutes if needed)
+- **Exception (Weekend/Holiday):**
+  - otMinutes = total work time (checkOut - checkIn, minus lunch deduction)
+  - No dependency on 17:31 threshold
 Else 0.
 
 ## 5) Requests Adjustment Rules
@@ -467,10 +470,24 @@ if (!otApproved) {
 }
 ```
 
+#### Scenario C: Weekend/Holiday ✅
+```
+date: 2026-02-08 (Saturday)
+checkInAt: 08:30
+checkOutAt: 11:00
+otApproved: false (irrelevant for weekend/holiday)
+
+Calculation:
+- workMinutes = 08:30 to 11:00 = 150 minutes
+- otMinutes = 150 minutes (ALL work time = OT)
+- Weekend/holiday rule: No approval needed, no 17:31 threshold
+```
+
 **Key Points:**
 - A1 (STRICT): No grace period - về sau 17:30 phải có approval
 - B2: Actual OT = calculated at checkout (not estimated time from request)
 - C1: Automatic calculation based on actual checkout time
+- F1 (Weekend/Holiday Exception): All work time = OT time
 
 ---
 
@@ -485,14 +502,20 @@ if (!otApproved) {
 
 **Behavior:**
 ```javascript
-// Weekend/Holiday logic (unchanged from v2.5)
+// Weekend/Holiday logic (updated v2.8)
 if (isWeekend(dateKey) || holidayDates.has(dateKey)) {
-  // Force otApproved=true for calculation purposes
-  workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut, true);
-  otMinutes = computeOtMinutes(dateKey, checkOut, true);
+  // ALL work time = OT time (no 17:31 threshold)
+  const totalWorkTime = computeWorkMinutes(dateKey, checkIn, checkOut, true);
+  workMinutes = totalWorkTime;
+  otMinutes = totalWorkTime;  // Same value: all work = OT
   // No OT_REQUEST needed
 }
 ```
+
+**Key Change from v2.7:**
+- Weekend/holiday OT no longer uses 17:31 threshold
+- ALL work time = OT time (including morning/afternoon shifts)
+- Example: 08:00-11:00 Sunday = 180min work, 180min OT
 
 **This applies to:**
 - Saturday/Sunday
@@ -661,3 +684,514 @@ for (const record of records) {
 - OT approval requirement (§10.5) OVERRIDES automatic calculation (§4.3)
 - Weekend/holiday exception (§10.6) takes precedence over approval requirement
 - Cross-midnight rules (§10.3) align with existing §9 structure
+
+---
+
+## 11) Auto-Close Scheduler Rules (NEW v2.7)
+
+### 11.1 Overview
+**Purpose:** Automatically close stale attendance sessions left open overnight.
+
+**Problem:** Employees sometimes forget to check out, leaving `checkOutAt = null`. This creates data quality issues:
+- Inaccurate work hours calculation
+- Cannot detect late/early patterns
+- Blocks next-day check-in until manually resolved
+
+**Solution:** Midnight scheduler auto-closes overdue open sessions, flags them for reconciliation.
+
+---
+
+### 11.2 Scheduler Behavior
+
+**Trigger:** Runs automatically at midnight (00:00 GMT+7) every day.
+
+**Target Query:**
+```javascript
+// Find all open sessions from dates BEFORE today
+{
+  checkOutAt: null,
+  date: { $lt: todayKey }  // e.g., if today=2026-02-06, finds 2026-02-05 and earlier
+}
+```
+
+**Auto-Close Action:**
+For each stale session:
+1. Set `checkOutAt` to midnight of the **next day** after check-in date
+   - Example: checkIn on 2026-02-05 08:30 → checkOut set to 2026-02-06 00:00:00
+2. Set `closeSource = 'SYSTEM_AUTO_MIDNIGHT'`
+3. Set `needsReconciliation = true`
+4. Create AuditLog record (type: STALE_OPEN_SESSION)
+
+**Catch-Up on Restart:**
+- When server restarts, runs catch-up for any missed days
+- Ensures no gaps even if server was offline at midnight
+
+---
+
+### 11.3 Grace Period Configuration
+
+**Environment Variable:** `CHECKOUT_GRACE_HOURS`
+- **Range:** 1-48 hours
+- **Default:** 24 hours
+- **Purpose:** Defines maximum time from check-in to auto-close
+
+**Validation:**
+```javascript
+const graceHours = parseInt(process.env.CHECKOUT_GRACE_HOURS) || 24;
+if (graceHours < 1 || graceHours > 48) {
+  throw new Error('CHECKOUT_GRACE_HOURS must be 1-48');
+}
+```
+
+**Example:**
+- Grace = 24h
+- CheckIn: 2026-02-05 08:30
+- Auto-close triggers: 2026-02-06 00:00 (15.5h later, within grace)
+- CheckOut set to: 2026-02-06 00:00
+
+---
+
+### 11.4 Reconciliation Workflow
+
+**Step 1: Auto-Close (Midnight)**
+```javascript
+attendance = {
+  date: "2026-02-05",
+  checkInAt: 2026-02-05T08:30:00+07:00,
+  checkOutAt: 2026-02-06T00:00:00+07:00,  // Set by system
+  closeSource: "SYSTEM_AUTO_MIDNIGHT",
+  needsReconciliation: true
+}
+```
+
+**Step 2: Employee Action (Next Day)**
+Employee has two options:
+1. **Submit FORGOT_CHECKOUT request** with actual checkout time (see §12)
+2. **Accept auto-close** (do nothing, becomes permanent after 7 days)
+
+**Step 3: Manager Approval** (if FORGOT_CHECKOUT submitted)
+- Approve → attendance updated with actual time, `needsReconciliation = false`
+- Reject → auto-close time remains, `needsReconciliation = false` (locked)
+
+**Step 4: Admin Escalation** (optional)
+- If employee doesn't act within submission deadline (7 days)
+- Admin can manually force-checkout via `POST /api/admin/attendance/:id/force-checkout`
+
+---
+
+### 11.5 API Endpoints (Employee-Facing)
+
+**GET /api/attendance/open-session**
+
+**Purpose:** Retrieve user's own open sessions and reconciliation items.
+
+**Auth:** Any authenticated user
+
+**Response:**
+```json
+{
+  "openSessions": [
+    {
+      "_id": "...",
+      "date": "2026-02-06",
+      "checkInAt": "2026-02-06T08:30:00.000Z",
+      "hoursOpen": 3.5
+    }
+  ],
+  "reconciliationItems": [
+    {
+      "_id": "...",
+      "date": "2026-02-05",
+      "checkInAt": "2026-02-05T08:30:00.000Z",
+      "checkOutAt": "2026-02-06T00:00:00.000Z",
+      "closeSource": "SYSTEM_AUTO_MIDNIGHT",
+      "submitDeadline": "2026-02-13T00:00:00.000Z",
+      "hoursUntilDeadline": 156,
+      "isOverdue": false,
+      "hasPendingRequest": false
+    }
+  ]
+}
+```
+
+**Use Case:**
+- Dashboard displays "You have 1 session needing reconciliation"
+- Employee clicks → opens FORGOT_CHECKOUT request form
+
+---
+
+### 11.6 Admin Queue (see §12.5)
+
+Admins have dedicated endpoint to view all stale sessions company-wide:
+- `GET /api/admin/attendance/open-sessions?status=all|open|reconciliation`
+- Includes enriched data: queue status, deadlines, escalation flags
+
+---
+
+### 11.7 Edge Cases
+
+**Q: What if employee checks in at 23:00 and forgets to check out?**
+- Midnight scheduler runs at 00:00 (1 hour later)
+- Session auto-closed with checkOut=00:00
+- Work hours = 1 hour (23:00-00:00)
+- Employee can submit FORGOT_CHECKOUT with actual time
+
+**Q: What if server is offline at midnight?**
+- Catch-up runs on next startup
+- Processes all missed days in batch
+- No sessions lost
+
+**Q: Can employee check in again if auto-closed?**
+- Yes, auto-close doesn't block next-day check-in
+- New session created for new date
+
+**Q: What if manager approves FORGOT_CHECKOUT for 2026-02-05 18:00?**
+- Attendance updated: checkOut=18:00
+- Work hours recalculated: 08:30-18:00 = 8.5h (minus lunch)
+- `needsReconciliation = false`
+- `closeSource = 'ADJUST_APPROVAL'`
+
+---
+
+## 12) FORGOT_CHECKOUT Workflow Rules (NEW v2.7)
+
+### 12.1 Overview
+**Purpose:** Allow employees to reconcile attendance sessions that were auto-closed at midnight.
+
+**Use Case:**
+Employee worked until 18:00 but forgot to check out. Next morning:
+1. System auto-closed session at midnight (00:00)
+2. Employee creates FORGOT_CHECKOUT request with actual time (18:00)
+3. Manager reviews + approves
+4. Attendance updated to reflect actual work hours
+
+**Request Type:** `ADJUST_TIME` with `adjustMode = 'FORGOT_CHECKOUT'`
+
+---
+
+### 12.2 Creation Rules
+
+**Required Fields:**
+- `type`: "ADJUST_TIME"
+- `adjustMode`: "FORGOT_CHECKOUT"
+- `targetAttendanceId`: ObjectId of the auto-closed attendance
+- `requestedCheckOutAt`: Date (actual checkout time)
+- `date`: "YYYY-MM-DD" (must match target attendance date)
+- `reason`: String (explanation)
+
+**Forbidden Fields:**
+- `requestedCheckInAt`: Must be null (cannot change check-in time)
+
+**Validation Rules:**
+
+1. **Target Validation:**
+   ```javascript
+   const target = await Attendance.findById(targetAttendanceId);
+   if (!target) throw Error('Target attendance not found');
+   if (target.userId.toString() !== req.userId) throw Error('Not your attendance');
+   ```
+
+2. **Auto-Close Check:**
+   ```javascript
+   if (target.closeSource !== 'SYSTEM_AUTO_MIDNIGHT') {
+     throw Error('Target was not auto-closed');
+   }
+   if (!target.needsReconciliation) {
+     throw Error('Target does not need reconciliation');
+   }
+   ```
+
+3. **Time Validation:**
+   - `requestedCheckOutAt` must be >= `target.checkInAt`
+   - `requestedCheckOutAt` must be on same calendar day as `date` OR next day (cross-midnight)
+   - `requestedCheckOutAt` must be < now (no future times)
+
+4. **Duplicate Prevention:**
+   - If PENDING FORGOT_CHECKOUT request exists for same targetAttendanceId → reject
+   - Error: "You already have a pending request for this session"
+
+5. **Bypass Weekend/Holiday Restriction:**
+   - FORGOT_CHECKOUT requests bypass the "no weekend/holiday adjustment" rule
+   - Rationale: Original check-in was legitimate, just forgot to check out
+
+---
+
+### 12.3 Approval Workflow
+
+**Additional Validation at Approval Time:**
+
+1. **Re-check Reconciliation Status:**
+   ```javascript
+   const target = await Attendance.findById(request.targetAttendanceId);
+   if (!target.needsReconciliation) {
+     // Session already reconciled by another request or admin
+     await Request.findByIdAndUpdate(requestId, {
+       status: 'REJECTED',
+       rejectionReason: 'SESSION_ALREADY_RECONCILED',
+       approvedBy: approverId,
+       approvedAt: new Date()
+     });
+     return; // Auto-reject
+   }
+   ```
+
+2. **Update Target Attendance:**
+   ```javascript
+   await Attendance.findByIdAndUpdate(target._id, {
+     checkOutAt: request.requestedCheckOutAt,
+     closeSource: 'ADJUST_APPROVAL',
+     closedByRequestId: request._id,
+     needsReconciliation: false
+   });
+   ```
+
+3. **Mark Request Approved:**
+   ```javascript
+   request.status = 'APPROVED';
+   request.approvedBy = approverId;
+   request.approvedAt = new Date();
+   await request.save();
+   ```
+
+**Result:**
+- Attendance now has correct checkout time
+- Work hours recalculated with actual time
+- Audit trail preserved (closedByRequestId links to request)
+
+---
+
+### 12.4 Rejection Workflow
+
+**Manager rejects FORGOT_CHECKOUT request:**
+
+1. **Update Request:**
+   ```javascript
+   request.status = 'REJECTED';
+   request.approvedBy = approverId;
+   request.approvedAt = new Date();
+   await request.save();
+   ```
+
+2. **Update Attendance:**
+   ```javascript
+   await Attendance.findByIdAndUpdate(request.targetAttendanceId, {
+     needsReconciliation: false  // Lock the auto-close time
+   });
+   ```
+
+**Result:**
+- Auto-close time becomes permanent
+- Employee cannot submit another FORGOT_CHECKOUT for same session
+- Work hours calculated based on midnight checkout
+
+---
+
+### 12.5 Admin Queue & Escalation
+
+**GET /api/admin/attendance/open-sessions**
+
+**Query Params:**
+- `status`: `all` | `open` | `reconciliation` (default: `all`)
+- `limit`: Number (default: 100, max: 1000)
+
+**Response Enrichment:**
+```json
+{
+  "items": [
+    {
+      "_id": "...",
+      "userId": "...",
+      "userName": "John Doe",
+      "employeeCode": "NV001",
+      "date": "2026-02-05",
+      "checkInAt": "2026-02-05T08:30:00.000Z",
+      "checkOutAt": "2026-02-06T00:00:00.000Z",
+      "closeSource": "SYSTEM_AUTO_MIDNIGHT",
+      "needsReconciliation": true,
+      "queueStatus": "ESCALATED",
+      "submitDeadline": "2026-02-13T00:00:00.000Z",
+      "hoursUntilDeadline": 12,
+      "isOverdue": false,
+      "isEscalated": true,
+      "pendingRequestId": "...",
+      "pendingRequestCreatedAt": "2026-02-05T10:00:00.000Z",
+      "pendingRequestAge": 5
+    }
+  ],
+  "summary": {
+    "totalOpen": 3,
+    "totalReconciliation": 12,
+    "escalated": 2,
+    "overdue": 1
+  }
+}
+```
+
+**Queue Status Logic:**
+- `OPEN`: Open session (checkOutAt=null) from today or earlier
+- `PENDING_RECONCILIATION`: needsReconciliation=true, no pending request, not overdue
+- `ESCALATED`: needsReconciliation=true, pending request older than 4 hours
+- `CLOSED`: checkOutAt exists, no reconciliation needed
+
+**Escalation Trigger:**
+- FORGOT_CHECKOUT request submitted but not approved/rejected within 4 hours
+- Admin can intervene or follow up with manager
+
+---
+
+### 12.6 Admin Force Checkout
+
+**POST /api/admin/attendance/:id/force-checkout**
+
+**Purpose:** Manually close a session (alternative to FORGOT_CHECKOUT workflow).
+
+**Request Body:**
+```json
+{
+  "checkOutAt": "2026-02-05T18:30:00.000Z",
+  "reason": "Manager confirmed via phone call"
+}
+```
+
+**Validation:**
+- `checkOutAt` must be >= attendance.checkInAt
+- `checkOutAt` must be <= now
+- Admin only (RBAC)
+
+**Effect:**
+```javascript
+attendance.checkOutAt = req.body.checkOutAt;
+attendance.closeSource = 'ADMIN_FORCE';
+attendance.needsReconciliation = false;
+```
+
+**Use Case:**
+- Employee on leave cannot submit request
+- Manager confirmed actual time verbally
+- Deadline passed, no request submitted
+
+---
+
+### 12.7 Submission Deadline
+
+**Configuration:** `ADJUST_REQUEST_MAX_DAYS` (env variable)
+- **Range:** 1-30 days
+- **Default:** 7 days
+- **Applies to:** FORGOT_CHECKOUT requests
+
+**Calculation:**
+```javascript
+const maxDays = parseInt(process.env.ADJUST_REQUEST_MAX_DAYS) || 7;
+const deadline = addDays(attendance.date, maxDays);
+```
+
+**Example:**
+- Attendance date: 2026-02-05
+- Max days: 7
+- Deadline: 2026-02-12 23:59:59
+- After deadline: Cannot submit FORGOT_CHECKOUT, admin intervention required
+
+---
+
+### 12.8 Edge Cases & FAQs
+
+**Q: Can employee submit FORGOT_CHECKOUT for a session they manually checked out?**
+- No. Target must have `closeSource = 'SYSTEM_AUTO_MIDNIGHT'`
+- Manual checkout has `closeSource = 'USER_CHECKOUT'` or null
+
+**Q: What if employee submits FORGOT_CHECKOUT with earlier time than auto-close?**
+- Example: auto-closed at 00:00, requests 18:00
+- Allowed. New checkout time is earlier, which is valid.
+- Work hours reduced accordingly.
+
+**Q: Can employee change check-in time via FORGOT_CHECKOUT?**
+- No. `requestedCheckInAt` is forbidden.
+- Check-in time cannot be changed (system recorded actual check-in, that's accurate).
+
+**Q: What if admin force-closes while FORGOT_CHECKOUT is pending?**
+- Admin force-close sets `needsReconciliation = false`
+- Pending request auto-rejected at next approval attempt (validation fails)
+- Error: "SESSION_ALREADY_RECONCILED"
+
+**Q: What happens after rejection?**
+- `needsReconciliation` set to false
+- Auto-close time becomes permanent
+- Employee **cannot** submit another FORGOT_CHECKOUT for same session
+- Only admin can change it via force-checkout
+
+**Q: Can manager approve FORGOT_CHECKOUT for other team member?**
+- Yes, if in same team (RBAC enforced)
+- Cross-team blocked (403 Forbidden)
+
+---
+
+### 12.9 Database Audit Trail
+
+**Tracing a Reconciliation:**
+
+1. **Initial State (after auto-close):**
+   ```javascript
+   attendance = {
+     closeSource: 'SYSTEM_AUTO_MIDNIGHT',
+     needsReconciliation: true,
+     closedByRequestId: null
+   }
+   auditLog = {
+     type: 'STALE_OPEN_SESSION',
+     userId: '...',
+     details: { sessionDate: '2026-02-05', ... }
+   }
+   ```
+
+2. **After FORGOT_CHECKOUT Approval:**
+   ```javascript
+   attendance = {
+     closeSource: 'ADJUST_APPROVAL',
+     needsReconciliation: false,
+     closedByRequestId: '<request_id>'
+   }
+   request = {
+     type: 'ADJUST_TIME',
+     adjustMode: 'FORGOT_CHECKOUT',
+     targetAttendanceId: '<attendance_id>',
+     status: 'APPROVED',
+     approvedBy: '<manager_id>'
+   }
+   ```
+
+**Query Examples:**
+```javascript
+// Find all auto-closed sessions still needing action
+Attendance.find({
+  closeSource: 'SYSTEM_AUTO_MIDNIGHT',
+  needsReconciliation: true
+});
+
+// Find all reconciled sessions with audit trail
+Attendance.find({
+  closeSource: 'ADJUST_APPROVAL',
+  closedByRequestId: { $ne: null }
+}).populate('closedByRequestId');
+
+// Find user's pending FORGOT_CHECKOUT requests
+Request.find({
+  userId: '...',
+  type: 'ADJUST_TIME',
+  adjustMode: 'FORGOT_CHECKOUT',
+  status: 'PENDING'
+});
+```
+
+---
+
+### 12.10 Priority & Conflict Resolution
+
+**Document Hierarchy:**
+1. This section (§12) - FORGOT_CHECKOUT Rules (v2.7)
+2. Section §11 - Auto-Close Scheduler (trigger for FORGOT_CHECKOUT)
+3. Section §5 - Requests Adjustment Rules (general ADJUST_TIME rules)
+
+**In Case of Conflict:**
+- FORGOT_CHECKOUT rules (§12) OVERRIDE general ADJUST_TIME rules (§5) when applicable
+- Weekend/holiday restriction bypassed for FORGOT_CHECKOUT (special case)
+- Auto-close scheduler (§11) is prerequisite for FORGOT_CHECKOUT workflow
