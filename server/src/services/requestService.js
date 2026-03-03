@@ -39,8 +39,23 @@ export const createRequest = async (userId, requestData) => {
   }
   
   // Default: ADJUST_TIME
-  const { date, requestedCheckInAt, requestedCheckOutAt, reason } = requestData;
-  return await createAdjustTimeRequest(userId, date, requestedCheckInAt, requestedCheckOutAt, reason);
+  const {
+    date,
+    requestedCheckInAt,
+    requestedCheckOutAt,
+    reason,
+    adjustMode,
+    targetAttendanceId
+  } = requestData;
+
+  return await createAdjustTimeRequest(
+    userId,
+    date,
+    requestedCheckInAt,
+    requestedCheckOutAt,
+    reason,
+    { adjustMode, targetAttendanceId }
+  );
 };
 
 /**
@@ -178,7 +193,96 @@ export const getPendingRequests = async (user, options = {}) => {
     .limit(limit)
     .lean();
 
+  // Enrich OT requests with real attendance check-in/check-out from Attendance collection.
+  const otRequests = requests.filter((req) => req?.type === 'OT_REQUEST');
+  if (otRequests.length === 0) {
+    return requests;
+  }
+
+  const seen = new Set();
+  const lookupPairs = [];
+
+  for (const otReq of otRequests) {
+    const rawUserId = otReq?.userId?._id || otReq?.userId || null;
+    const userId = rawUserId ? String(rawUserId) : '';
+    // Legacy fallback: some old OT docs may still use checkInDate.
+    const dateKey = otReq?.date || otReq?.checkInDate || null;
+
+    if (!userId || !dateKey) {
+      otReq.attendance = null;
+      continue;
+    }
+
+    const dedupeKey = `${userId}|${dateKey}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    lookupPairs.push({ userId: rawUserId, date: dateKey });
+  }
+
+  // Guard: avoid querying Attendance with {$or: []}.
+  if (lookupPairs.length === 0) {
+    for (const otReq of otRequests) {
+      if (otReq.attendance === undefined) {
+        otReq.attendance = null;
+      }
+    }
+    return requests;
+  }
+
+  const attendances = await Attendance.find({ $or: lookupPairs })
+    .select('userId date checkInAt checkOutAt')
+    .lean();
+
+  const attendanceMap = new Map();
+  for (const att of attendances) {
+    const mapKey = `${String(att.userId)}|${att.date}`;
+    attendanceMap.set(mapKey, {
+      checkInAt: att.checkInAt ?? null,
+      checkOutAt: att.checkOutAt ?? null
+    });
+  }
+
+  for (const otReq of otRequests) {
+    if (otReq.attendance === null) {
+      continue;
+    }
+
+    const rawUserId = otReq?.userId?._id || otReq?.userId || null;
+    const userId = rawUserId ? String(rawUserId) : '';
+    const dateKey = otReq?.date || otReq?.checkInDate || null;
+
+    if (!userId || !dateKey) {
+      otReq.attendance = null;
+      continue;
+    }
+
+    const mapKey = `${userId}|${dateKey}`;
+    otReq.attendance = attendanceMap.get(mapKey) || null;
+  }
+
   return requests;
+};
+
+const autoRejectWithSystemReason = async (requestId, approverId, systemRejectReason, session = null) => {
+  const query = Request.findOneAndUpdate(
+    {
+      _id: requestId,
+      status: 'PENDING'
+    },
+    {
+      $set: {
+        status: 'REJECTED',
+        approvedBy: approverId,
+        approvedAt: new Date(),
+        systemRejectReason
+      }
+    },
+    { new: true }
+  );
+
+  return session ? await query.session(session) : await query;
 };
 
 /**
@@ -269,6 +373,72 @@ async function approveRequestCore(requestId, approver, session) {
 
   // STEP 3: Revalidate ADJUST_TIME requests (defense-in-depth)
   if (existingRequest.type === 'ADJUST_TIME') {
+    const isForgotCheckout = existingRequest.adjustMode === 'FORGOT_CHECKOUT';
+    let targetAttendance = null;
+
+    if (isForgotCheckout) {
+      if (!existingRequest.targetAttendanceId || !mongoose.Types.ObjectId.isValid(existingRequest.targetAttendanceId)) {
+        const error = new Error('Cannot approve: invalid targetAttendanceId');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const targetQuery = Attendance.findOne({
+        _id: existingRequest.targetAttendanceId,
+        userId: existingRequest.userId._id
+      }).select('_id date checkInAt checkOutAt closeSource needsReconciliation').lean();
+
+      targetAttendance = session ? await targetQuery.session(session) : await targetQuery;
+
+      if (!targetAttendance) {
+        const error = new Error('Cannot approve: target attendance session not found');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (targetAttendance.date !== existingRequest.date) {
+        const error = new Error('Cannot approve: request.date must match target attendance date');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!targetAttendance.checkInAt) {
+        const error = new Error('Cannot approve: missing check-in reference');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!existingRequest.requestedCheckOutAt) {
+        const error = new Error('Cannot approve: requestedCheckOutAt is required for FORGOT_CHECKOUT');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (existingRequest.requestedCheckInAt) {
+        const error = new Error('Cannot approve: FORGOT_CHECKOUT does not accept requestedCheckInAt');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!targetAttendance.checkOutAt) {
+        const error = new Error('Cannot approve: target session is still open');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (targetAttendance.closeSource !== 'SYSTEM_AUTO_MIDNIGHT' || !targetAttendance.needsReconciliation) {
+        await autoRejectWithSystemReason(
+          requestId,
+          approver._id,
+          'SESSION_ALREADY_RECONCILED',
+          session
+        );
+        const error = new Error('Cannot approve: target session already reconciled or not auto-closed');
+        error.statusCode = 409;
+        throw error;
+      }
+    }
+
     // Validate checkIn is on request.date
     if (existingRequest.requestedCheckInAt) {
       const checkInDateKey = getDateKey(new Date(existingRequest.requestedCheckInAt));
@@ -287,7 +457,9 @@ async function approveRequestCore(requestId, approver, session) {
 
     // Determine anchor time (needed for both Rule 1 and Rule 2)
     let anchorTime = null;
-    if (existingRequest.requestedCheckInAt) {
+    if (isForgotCheckout) {
+      anchorTime = new Date(targetAttendance.checkInAt);
+    } else if (existingRequest.requestedCheckInAt) {
       anchorTime = new Date(existingRequest.requestedCheckInAt);
     } else {
       // Fetch attendance (with or without session)
@@ -363,6 +535,13 @@ async function approveRequestCore(requestId, approver, session) {
   if (!updatedRequest) {
     const checkQuery = Request.findById(requestId);
     const currentRequest = session ? await checkQuery.session(session) : await checkQuery;
+
+    // Standalone path can fail after status update but before attendance update.
+    // Best effort repair keeps behavior (409) while making retry safe.
+    if (currentRequest?.status === 'APPROVED' && currentRequest?.type === 'ADJUST_TIME') {
+      await updateAttendanceFromRequest(currentRequest, session, { repairMode: true }).catch(() => {});
+    }
+
     const currentStatus = currentRequest ? currentRequest.status.toLowerCase() : 'unknown';
     const error = new Error(`Request already ${currentStatus}`);
     error.statusCode = 409;
@@ -393,14 +572,18 @@ async function approveRequestCore(requestId, approver, session) {
   
   // ADJUST_TIME: Update/create attendance
   if (updatedRequest.type === 'ADJUST_TIME') {
-    const requestDate = updatedRequest.date;
-    const month = requestDate.substring(0, 7);
-    const holidayDates = await getHolidayDatesForMonth(month, session);
+    const isForgotCheckout = updatedRequest.adjustMode === 'FORGOT_CHECKOUT';
 
-    if (isWeekend(requestDate) || holidayDates.has(requestDate)) {
-      const error = new Error('Cannot approve time adjustment request for weekend/holiday');
-      error.statusCode = 400;
-      throw error;
+    if (!isForgotCheckout) {
+      const requestDate = updatedRequest.date;
+      const month = requestDate.substring(0, 7);
+      const holidayDates = await getHolidayDatesForMonth(month, session);
+
+      if (isWeekend(requestDate) || holidayDates.has(requestDate)) {
+        const error = new Error('Cannot approve time adjustment request for weekend/holiday');
+        error.statusCode = 400;
+        throw error;
+      }
     }
 
     // Call refactored function with session
@@ -593,11 +776,73 @@ export const rejectRequest = async (requestId, rejector) => {
  * @param {Object} request - Approved request object
  * @param {Object} session - Mongoose session for transaction (optional)
  */
-async function updateAttendanceFromRequest(request, session = null) {
-  const { userId, date, requestedCheckInAt, requestedCheckOutAt } = request;
+async function updateAttendanceFromRequest(request, session = null, options = {}) {
+  const { userId, date, requestedCheckInAt, requestedCheckOutAt, adjustMode, targetAttendanceId } = request;
+  const { repairMode = false } = options;
 
   // Extract ObjectId safely (handle both populated and non-populated userId)
   const userObjectId = userId?._id ?? userId;
+  const isForgotCheckout = adjustMode === 'FORGOT_CHECKOUT';
+
+  if (isForgotCheckout) {
+    if (!targetAttendanceId || !mongoose.Types.ObjectId.isValid(targetAttendanceId)) {
+      const error = new Error('Cannot reconcile attendance: invalid targetAttendanceId');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!requestedCheckOutAt) {
+      const error = new Error('Cannot reconcile attendance: missing requestedCheckOutAt');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const filter = {
+      _id: targetAttendanceId,
+      userId: userObjectId,
+      date,
+      checkInAt: { $exists: true, $ne: null }
+    };
+
+    if (!repairMode) {
+      filter.needsReconciliation = true;
+      filter.closeSource = 'SYSTEM_AUTO_MIDNIGHT';
+    }
+
+    const update = {
+      $set: {
+        checkOutAt: requestedCheckOutAt,
+        closeSource: 'ADJUST_APPROVAL',
+        closedByRequestId: request._id ?? null,
+        needsReconciliation: false
+      }
+    };
+
+    const forgotQuery = Attendance.findOneAndUpdate(filter, update, {
+      new: true,
+      runValidators: true
+    });
+
+    const forgotUpdated = session ? await forgotQuery.session(session) : await forgotQuery;
+    if (!forgotUpdated && !repairMode) {
+      const currentQuery = Attendance.findOne({ _id: targetAttendanceId })
+        .select('checkOutAt needsReconciliation closeSource')
+        .lean();
+      const current = session ? await currentQuery.session(session) : await currentQuery;
+      const requestedMs = new Date(requestedCheckOutAt).getTime();
+      const currentMs = current?.checkOutAt ? new Date(current.checkOutAt).getTime() : NaN;
+
+      if (current && !current.needsReconciliation && current.closeSource === 'ADJUST_APPROVAL' && currentMs === requestedMs) {
+        return;
+      }
+
+      const error = new Error('Target attendance session already reconciled or changed');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    return;
+  }
 
   const updateFields = {};
 
@@ -607,6 +852,9 @@ async function updateAttendanceFromRequest(request, session = null) {
 
   if (requestedCheckOutAt) {
     updateFields.checkOutAt = requestedCheckOutAt;
+    updateFields.closeSource = 'ADJUST_APPROVAL';
+    updateFields.closedByRequestId = request._id ?? null;
+    updateFields.needsReconciliation = false;
   }
 
   // Phase 2.1 (OT_REQUEST): Reconcile OT approval when creating/updating attendance via ADJUST_TIME
