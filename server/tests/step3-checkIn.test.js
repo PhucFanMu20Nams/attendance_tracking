@@ -546,8 +546,10 @@ describe('Reliability Testing: Edge Cases and Error Handling', () => {
             .post('/api/attendance/check-in')
             .set('Authorization', `Bearer ${employeeToken}`);
 
-        // Reliability validation: System handles corruption gracefully
-        expect(res.status).toBe(400);
+        // Reliability validation: System handles corruption gracefully.
+        // When 2+ open sessions are detected, the service treats it as an anomaly
+        // (OPEN_SESSION_ANOMALY) and returns 409 — not 400 — to signal "contact admin".
+        expect(res.status).toBe(409);
         expect(res.body.message).toContain('open session');
 
         // Fault tolerance validation: No crash, proper error response

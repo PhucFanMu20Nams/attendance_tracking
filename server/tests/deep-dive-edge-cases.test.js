@@ -22,11 +22,15 @@ import Team from '../src/models/Team.js';
 import Attendance from '../src/models/Attendance.js';
 import Request from '../src/models/Request.js';
 import bcrypt from 'bcrypt';
-import { recentDistinctWeekdays } from './testDateHelper.js';
+import { recentDistinctWeekdays, recentWeekday } from './testDateHelper.js';
 
 let adminToken, managerToken, employeeToken;
 let teamId, employeeId;
-const [overlapDate, raceDate, tzDate, transitionDate] = recentDistinctWeekdays(4, 2);
+const [overlapDate, raceDate, tzDate] = recentDistinctWeekdays(3, 2);
+// Use a very recent weekday (1 day ago) for state-transition setup so it always falls
+// within the ADJUST_TIME submission window (max 7 days). Using recentDistinctWeekdays(4)
+// could produce a date that is exactly 7 days ago, failing the window check at test time.
+const transitionDate = recentWeekday(1);
 
 beforeAll(async () => {
     // Use separate database for deep dive tests
