@@ -248,6 +248,19 @@ export default function TimesheetMatrixPage() {
                 </Alert>
             )}
 
+            {/* Legend */}
+            {!loading && data.rows.length > 0 && (
+                <div className="flex flex-wrap gap-4 text-xs text-gray-600 mt-4 p-4 bg-gray-50 rounded">
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-green-200 border"></span> Đúng giờ (✓)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-red-200 border"></span> Đi muộn (M)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-yellow-200 border"></span> Về sớm/Thiếu checkout (S/?)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-purple-200 border"></span> Muộn & Về sớm (M+S)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-100 border"></span> Vắng (V)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-300 border"></span> Cuối tuần/Lễ (-)</div>
+                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-blue-100 border"></span> Đang làm (W)</div>
+                </div>
+            )}
+
             <div className="overflow-x-auto bg-white rounded-lg shadow">
                 {loading ? (
                     <div className="flex justify-center py-12">
@@ -292,18 +305,6 @@ export default function TimesheetMatrixPage() {
                 )}
             </div>
 
-            {/* Legend */}
-            {!loading && data.rows.length > 0 && (
-                <div className="flex flex-wrap gap-4 text-xs text-gray-600 mt-4 p-4 bg-gray-50 rounded">
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-green-200 border"></span> Đúng giờ (✓)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-red-200 border"></span> Đi muộn (M)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-yellow-200 border"></span> Về sớm/Thiếu checkout (S/?)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-purple-200 border"></span> Muộn & Về sớm (M+S)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-100 border"></span> Vắng (V)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-gray-300 border"></span> Cuối tuần/Lễ (-)</div>
-                    <div className="flex items-center gap-1"><span className="w-4 h-4 bg-blue-100 border"></span> Đang làm (W)</div>
-                </div>
-            )}
         </div>
     );
 }
