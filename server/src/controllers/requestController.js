@@ -27,6 +27,8 @@ export const createRequest = async (req, res) => {
       date, 
       requestedCheckInAt, 
       requestedCheckOutAt,
+      adjustMode,
+      targetAttendanceId,
       leaveStartDate,
       leaveEndDate,
       leaveType,
@@ -89,6 +91,8 @@ export const createRequest = async (req, res) => {
         date,
         requestedCheckInAt: requestedCheckInAt || null,
         requestedCheckOutAt: requestedCheckOutAt || null,
+        adjustMode: adjustMode || 'GENERAL',
+        targetAttendanceId: targetAttendanceId || null,
         reason
       });
     }

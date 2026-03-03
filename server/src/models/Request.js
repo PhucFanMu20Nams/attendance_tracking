@@ -14,6 +14,7 @@ const OT_CROSS_MIDNIGHT_CUTOFF_MINUTES = 0;
 
 const REQUEST_TYPES = ['ADJUST_TIME', 'LEAVE', 'OT_REQUEST'];
 const REQUEST_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'];
+const ADJUST_MODES = ['GENERAL', 'FORGOT_CHECKOUT'];
 
 const getNextDateKey = (dateKey) => {
   const [year, month, day] = dateKey.split('-').map(Number);
@@ -76,6 +77,16 @@ const requestSchema = new mongoose.Schema(
       required: true,
       default: 'ADJUST_TIME'
     },
+    adjustMode: {
+      type: String,
+      enum: ADJUST_MODES,
+      default: null
+    },
+    targetAttendanceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Attendance',
+      default: null
+    },
     requestedCheckInAt: {
       type: Date,
       default: null
@@ -133,6 +144,11 @@ const requestSchema = new mongoose.Schema(
     },
     approvedAt: {
       type: Date
+    },
+    systemRejectReason: {
+      type: String,
+      default: null,
+      trim: true
     }
   },
   { timestamps: true }
@@ -154,6 +170,23 @@ requestSchema.pre('validate', function() {
     this.leaveEndDate = null;
     this.leaveType = null;
     this.leaveDaysCount = null;
+
+    // Default adjust mode for backward compatibility
+    if (!this.adjustMode) {
+      this.adjustMode = 'GENERAL';
+    }
+
+    if (!ADJUST_MODES.includes(this.adjustMode)) {
+      this.invalidate('adjustMode', `adjustMode must be one of: ${ADJUST_MODES.join(', ')}`);
+    }
+
+    if (this.adjustMode === 'GENERAL') {
+      this.targetAttendanceId = null;
+    }
+
+    if (this.adjustMode === 'FORGOT_CHECKOUT' && !this.targetAttendanceId) {
+      this.invalidate('targetAttendanceId', 'targetAttendanceId is required for FORGOT_CHECKOUT mode');
+    }
     
     // Sync date <-> checkInDate (bidirectional for safety)
     if (this.checkInDate && !this.date) {
@@ -200,6 +233,9 @@ requestSchema.pre('validate', function() {
     // P0-2: Clear ADJUST_TIME-specific fields to prevent index pollution
     this.checkInDate = null;
     this.checkOutDate = null;
+    this.adjustMode = null;
+    this.targetAttendanceId = null;
+    this.systemRejectReason = null;
     this.requestedCheckInAt = null;
     this.requestedCheckOutAt = null;
     
@@ -286,6 +322,9 @@ requestSchema.pre('validate', function() {
     this.date = null;
     this.checkInDate = null;
     this.checkOutDate = null;
+    this.adjustMode = null;
+    this.targetAttendanceId = null;
+    this.systemRejectReason = null;
     this.requestedCheckInAt = null;
     this.requestedCheckOutAt = null;
     
@@ -369,5 +408,5 @@ requestSchema.index(
   }
 );
 
-export { REQUEST_TYPES, REQUEST_STATUSES };
+export { REQUEST_TYPES, REQUEST_STATUSES, ADJUST_MODES };
 export default mongoose.model('Request', requestSchema);

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Request from '../models/Request.js';
+import Request, { ADJUST_MODES } from '../models/Request.js';
 import Attendance from '../models/Attendance.js';
 import { getDateKey, isWeekend } from '../utils/dateUtils.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
@@ -18,9 +18,28 @@ import { toValidDate, assertHasTzIfString } from './requestDateValidation.js';
  * @param {Date|null} requestedCheckInAt - Requested check-in time (optional)
  * @param {Date|null} requestedCheckOutAt - Requested check-out time (optional)
  * @param {string} reason - Reason for the request
+ * @param {Object} options - Additional options
+ * @param {string} options.adjustMode - GENERAL | FORGOT_CHECKOUT
+ * @param {string|null} options.targetAttendanceId - Required when adjustMode=FORGOT_CHECKOUT
  * @returns {Promise<Object>} Created request
  */
-export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, requestedCheckOutAt, reason) => {
+export const createAdjustTimeRequest = async (
+  userId,
+  date,
+  requestedCheckInAt,
+  requestedCheckOutAt,
+  reason,
+  options = {}
+) => {
+  const {
+    adjustMode = 'GENERAL',
+    targetAttendanceId = null
+  } = options;
+
+  const normalizedAdjustMode = typeof adjustMode === 'string'
+    ? adjustMode.trim().toUpperCase()
+    : 'GENERAL';
+
   // Validation 0: userId must be valid ObjectId (P1 defensive fix for consistency)
   if (!mongoose.Types.ObjectId.isValid(userId)) {
     const error = new Error('Invalid userId');
@@ -34,11 +53,35 @@ export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, 
     throw error;
   }
 
+  if (!ADJUST_MODES.includes(normalizedAdjustMode)) {
+    const error = new Error(`Invalid adjustMode. Must be one of: ${ADJUST_MODES.join(', ')}`);
+    error.statusCode = 400;
+    throw error;
+  }
+
   // Validate and parse time fields early (prevents Invalid Date bugs)
   const checkIn = toValidDate(requestedCheckInAt, 'requestedCheckInAt');
   const checkOut = toValidDate(requestedCheckOutAt, 'requestedCheckOutAt');
 
-  if (!checkIn && !checkOut) {
+  if (normalizedAdjustMode === 'FORGOT_CHECKOUT') {
+    if (!targetAttendanceId || !mongoose.Types.ObjectId.isValid(targetAttendanceId)) {
+      const error = new Error('targetAttendanceId is required for FORGOT_CHECKOUT mode');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (checkIn) {
+      const error = new Error('FORGOT_CHECKOUT mode does not accept requestedCheckInAt');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!checkOut) {
+      const error = new Error('requestedCheckOutAt is required for FORGOT_CHECKOUT mode');
+      error.statusCode = 400;
+      throw error;
+    }
+  } else if (!checkIn && !checkOut) {
     const error = new Error('At least one of requestedCheckInAt or requestedCheckOutAt is required');
     error.statusCode = 400;
     throw error;
@@ -94,22 +137,64 @@ export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, 
     }
   }
 
-  // Business rule: If attendance doesn't exist for this date, checkInAt is required
-  // (because Attendance.checkInAt is a required field)
-  // Also validate partial requests against existing attendance data
-  // NOTE: Fetch BEFORE 2-rule validation to access checkInAt for anchor time
-  const existingAttendance = await Attendance.findOne({ userId, date })
-    .select('checkInAt checkOutAt')
-    .lean();
+  // Load reference attendance early for both GENERAL and FORGOT_CHECKOUT flows
+  let existingAttendance;
+  if (normalizedAdjustMode === 'FORGOT_CHECKOUT') {
+    existingAttendance = await Attendance.findOne({
+      _id: targetAttendanceId,
+      userId
+    })
+      .select('_id date checkInAt checkOutAt closeSource needsReconciliation')
+      .lean();
 
-  // Issue #5: Block weekend/holiday requests early for better UX
-  // (Same validation as approveRequest, but fail-fast at creation)
-  const month = date.substring(0, 7);
-  const holidayDates = await getHolidayDatesForMonth(month, null);
-  if (isWeekend(date) || holidayDates.has(date)) {
-    const error = new Error('Cannot create time adjustment request for weekend or holiday');
-    error.statusCode = 400;
-    throw error;
+    if (!existingAttendance) {
+      const error = new Error('Target attendance session not found');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    if (existingAttendance.date !== date) {
+      const error = new Error('request.date must match target attendance date');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!existingAttendance.checkInAt) {
+      const error = new Error('Cannot reconcile session without check-in');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!existingAttendance.checkOutAt) {
+      const error = new Error('Target session is still open. Please checkout first.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (existingAttendance.closeSource !== 'SYSTEM_AUTO_MIDNIGHT' || !existingAttendance.needsReconciliation) {
+      const error = new Error('Target session is not pending forgot-checkout reconciliation');
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    // Business rule: If attendance doesn't exist for this date, checkInAt is required
+    // (because Attendance.checkInAt is a required field)
+    // Also validate partial requests against existing attendance data
+    existingAttendance = await Attendance.findOne({ userId, date })
+      .select('_id date checkInAt checkOutAt closeSource needsReconciliation')
+      .lean();
+  }
+
+  // Keep historical behavior for GENERAL ADJUST_TIME only.
+  // FORGOT_CHECKOUT reconciles an existing attendance record, including weekend/holiday sessions.
+  if (normalizedAdjustMode !== 'FORGOT_CHECKOUT') {
+    const month = date.substring(0, 7);
+    const holidayDates = await getHolidayDatesForMonth(month, null);
+    if (isWeekend(date) || holidayDates.has(date)) {
+      const error = new Error('Cannot create time adjustment request for weekend or holiday');
+      error.statusCode = 400;
+      throw error;
+    }
   }
 
   // Load grace config for 2-rule validation
@@ -223,6 +308,22 @@ export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, 
 
   // Prevent duplicate PENDING requests (P2 Fix: use checkInDate to match unique index)
   // P1-2 Fix: Add $or to support legacy data (date vs checkInDate field)
+  if (normalizedAdjustMode === 'FORGOT_CHECKOUT') {
+    const pendingByTarget = await Request.findOne({
+      userId,
+      type: 'ADJUST_TIME',
+      adjustMode: 'FORGOT_CHECKOUT',
+      targetAttendanceId,
+      status: 'PENDING'
+    }).select('_id');
+
+    if (pendingByTarget) {
+      const error = new Error('You already have a pending forgot-checkout request for this session.');
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
   const existingPendingRequest = await Request.findOne({
     userId,
     type: 'ADJUST_TIME',
@@ -248,6 +349,8 @@ export const createAdjustTimeRequest = async (userId, date, requestedCheckInAt, 
       checkInDate: computedCheckInDate,  // P0 Fix: Explicit for unique index + invariant
       checkOutDate: computedCheckOutDate, // P0 Fix: Computed from requestedCheckOutAt (null or D+1)
       type: 'ADJUST_TIME',
+      adjustMode: normalizedAdjustMode,
+      targetAttendanceId: normalizedAdjustMode === 'FORGOT_CHECKOUT' ? targetAttendanceId : null,
       requestedCheckInAt: checkIn,
       requestedCheckOutAt: checkOut,
       reason: trimmedReason,
