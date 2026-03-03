@@ -1,4 +1,4 @@
-# MVP Scope — Attendance Web App (MERN) (v2.6)
+# MVP Scope — Attendance Web App (MERN) (v2.7)
 
 ## Goal
 Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
@@ -36,11 +36,57 @@ Build a simple internal attendance MVP for an SME. Beginner-friendly but correct
   - Admin: team scope or company scope
 - Cells show computed status + color key
 
-### 6) Monthly Report + Excel Export
+### 6) Monthly Report + Excel Export (ENHANCED v2.7)
+
+#### Basic Features
 - Monthly report scope:
   - Manager: team
   - Admin: company or team
 - Export to Excel (.xlsx)
+
+#### Report Metrics (NEW v2.7)
+Per-employee monthly aggregation:
+- **Attendance Summary:**
+  - Total workdays in month
+  - Days present, days absent
+  - Late count, total late minutes
+  - Early leave count
+- **Leave Breakdown:**
+  - Annual leave days, sick leave days, unpaid leave days
+- **Work Hours:**
+  - Total work hours
+  - Approved OT hours
+  - Unapproved OT minutes (worked without approval)
+
+#### Excel Export Structure (NEW v2.7)
+**Two Sheets:**
+
+1. **Summary Sheet:**
+   - Employee roster with aggregated metrics
+   - Columns: Employee Code, Name, Team, Workdays, Present, Absent, Late Count/Minutes, Early Leave, Work Hours, OT Hours, Leave Days (Annual/Sick/Unpaid)
+
+2. **Daily Detail Matrix:**
+   - Rows: Employees
+   - Columns: Each day of the month
+   - Cell values: Status codes (ON_TIME, LATE, LEAVE, ABSENT, etc.)
+   - Color-coded for visual scanning
+
+#### Security & Quality (NEW v2.7)
+- **Formula Injection Prevention:**
+  - `sanitizeForExcel()` escapes leading `=`, `+`, `-`, `@` characters
+  - OWASP compliance for CSV/Excel injection
+- **Secure Download:**
+  - Client uses Blob API (no `window.open` XSS risk)
+  - `downloadBlob()` utility creates temporary `<a>` element
+  - Auto-cleanup after download trigger
+
+#### API Endpoints
+- `GET /api/reports/monthly?month=YYYY-MM&scope=team|company&teamId=`
+  - Returns JSON report data
+- `GET /api/reports/monthly/export?month=YYYY-MM&scope=team|company&teamId=`
+  - Returns Excel file (.xlsx)
+  - Content-Type: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+  - Content-Disposition: `attachment; filename="monthly-report-YYYY-MM.xlsx"`
 
 ### 7) Admin Basic Management
 - Admin creates users
@@ -98,16 +144,114 @@ Manager:
 - **Check-in integration**: otApproved auto-set on check-in if approved OT exists
 - **Reporting (H2)**: Three OT metrics: totalOtMinutes, approvedOtMinutes, unapprovedOtMinutes
 
-### 11) Audit & Admin Tools (NEW v2.6)
+### 11) Audit & Admin Tools (UPDATED v2.7)
 
+#### Auto-Close Scheduler (NEW v2.7)
+**Purpose:** Automatically close stale attendance sessions left open overnight.
+
+**How it works:**
+- Runs at midnight (00:00 GMT+7) every day
+- Finds all sessions with `checkOutAt = null` from dates before today
+- Auto-closes each session:
+  - Sets `checkOutAt` to midnight of next day after check-in
+  - Sets `closeSource = 'SYSTEM_AUTO_MIDNIGHT'`
+  - Sets `needsReconciliation = true`
+  - Creates AuditLog entry (type: STALE_OPEN_SESSION)
+- **Catch-up on restart:** Processes missed days if server was offline
+
+**Configuration:**
+- `CHECKOUT_GRACE_HOURS` (1-48, default 24): Max time from check-in to auto-close
+- `ADJUST_REQUEST_MAX_DAYS` (1-30, default 7): Submission window for FORGOT_CHECKOUT requests
+
+**Employee Endpoint:**
+- `GET /api/attendance/open-session`
+  - Returns own open sessions + reconciliation items
+  - Includes submission deadlines, overdue flags
+  - Used by dashboard to prompt FORGOT_CHECKOUT submissions
+
+#### FORGOT_CHECKOUT Workflow (NEW v2.7)
+**Purpose:** Allow employees to reconcile sessions auto-closed at midnight with actual checkout time.
+
+**Request Type:** `ADJUST_TIME` with `adjustMode = 'FORGOT_CHECKOUT'`
+
+**Required Fields:**
+- `targetAttendanceId`: ObjectId of auto-closed attendance
+- `requestedCheckOutAt`: Actual checkout time
+- `date`: Must match target attendance date
+- `reason`: Explanation
+
+**Validation:**
+- Target must have `closeSource = 'SYSTEM_AUTO_MIDNIGHT'`
+- Target must have `needsReconciliation = true`
+- Cannot change check-in time (only checkout)
+- Must be submitted within `ADJUST_REQUEST_MAX_DAYS` (default 7 days)
+
+**Approval Flow:**
+1. Manager/Admin approves request
+2. System validates target still needs reconciliation
+3. If already reconciled → auto-reject with reason `SESSION_ALREADY_RECONCILED`
+4. If valid → update attendance:
+   - Set `checkOutAt` to requested time
+   - Set `closeSource = 'ADJUST_APPROVAL'`
+   - Set `closedByRequestId` to request ID
+   - Set `needsReconciliation = false`
+5. Work hours recalculated with actual time
+
+**Special Rules:**
+- Bypasses weekend/holiday restriction (original check-in was legitimate)
+- Only one FORGOT_CHECKOUT per attendance session
+- Rejection locks the auto-close time (becomes permanent)
+
+#### Admin Queue & Monitoring (NEW v2.7)
+**Endpoint:** `GET /api/admin/attendance/open-sessions?status=all|open|reconciliation`
+
+**Purpose:** Dashboard for admins to monitor stale sessions company-wide.
+
+**Enriched Data:**
+- `queueStatus`: OPEN, PENDING_RECONCILIATION, ESCALATED, CLOSED
+- `submitDeadline`: When employee must act by
+- `isOverdue`: Deadline passed, no request submitted
+- `isEscalated`: Pending request older than 4 hours (manager not responding)
+- `pendingRequestId`: Link to FORGOT_CHECKOUT request if exists
+- `hoursUntilDeadline`: Time remaining for action
+
+**Queue Status Logic:**
+- **OPEN:** Session has `checkOutAt = null` (still working or forgot to check out today)
+- **PENDING_RECONCILIATION:** Auto-closed, awaiting employee request
+- **ESCALATED:** Employee submitted FORGOT_CHECKOUT but manager hasn't acted in 4+ hours
+- **CLOSED:** Normal session, no issues
+
+**Summary Counts:**
+- Total open sessions
+- Total needing reconciliation
+- Escalated count (manager bottleneck)
+- Overdue count (employee missed deadline)
+
+#### AuditLog System
 - **AuditLog system**: Tracks `MULTIPLE_ACTIVE_SESSIONS` and `STALE_OPEN_SESSION` events
   - 90-day TTL auto-cleanup via MongoDB TTL index
   - Pre-save validation ensures data integrity
+
+#### Admin Force Checkout
 - **Force Checkout**: Admin endpoint `POST /api/admin/attendance/:id/force-checkout`
-  - Closes stale open sessions detected by the system
+  - Manually close any session with custom checkout time
+  - Sets `closeSource = 'ADMIN_FORCE'`
+  - Sets `needsReconciliation = false`
+  - Requires reason field for audit trail
+  - Use cases: employee on leave, verbal confirmation from manager, deadline passed
+
+#### Attendance Reconciliation Fields
+New fields added to Attendance model (v2.7):
+- `closeSource`: enum [USER_CHECKOUT, SYSTEM_AUTO_MIDNIGHT, ADJUST_APPROVAL, ADMIN_FORCE]
+- `closedByRequestId`: ObjectId linking to approval request
+- `needsReconciliation`: Boolean flag for pending employee action
+
+#### Grace Configuration
 - **Grace Config**: Environment variable-based configuration
   - `CHECKOUT_GRACE_HOURS` (1-48, default 24): Max time from check-in to checkout
   - `ADJUST_REQUEST_MAX_DAYS` (1-30, default 7): Submission window for adjust requests
+
+#### Cross-Midnight ADJUST_TIME
 - **Cross-midnight ADJUST_TIME**: Requests spanning midnight boundaries
   - Uses `checkInDate`/`checkOutDate` fields for date boundary detection
 
@@ -119,7 +263,7 @@ Manager:
 - Payroll/salary and complex OT payment rules
 - Import employees from Excel/HR systems
 
-## Performance & Security Notes (v2.6)
+## Performance & Security Notes (v2.7)
 
 ### Query Optimization
 - **Requests**: Use `.select()` + `.lean()` for lightweight queries when checking existing attendance
@@ -135,6 +279,29 @@ Manager:
 - **Auto-extend**: findOneAndUpdate for atomic upsert instead of check-then-insert
 - **Pre-validate hooks**: Model-level cross-contamination cleanup prevents data pollution between request types
 - **Admin route RBAC**: Currently enforced at controller level (defense-in-depth), not at route middleware level
+
+### Auto-Close & Reconciliation Optimization (NEW v2.7)
+- **Partial index for open sessions**: `(userId, checkInAt DESC) WHERE checkOutAt IS NULL`
+  - Enables fast lookup of user's active session
+  - Used by auto-close scheduler to find stale sessions
+- **Compound index for reconciliation queue**: `(needsReconciliation, date)`
+  - Optimizes admin queue queries
+  - Supports filtering by reconciliation status + date range
+- **Scheduler efficiency**:
+  - Bulk write operations (updateMany) for midnight auto-close
+  - Catch-up runs only on startup, not on every request
+  - Cron-like scheduling via setTimeout (no external dependencies)
+
+### FORGOT_CHECKOUT Validation (NEW v2.7)
+- **Pre-validate hooks**: Enforce `targetAttendanceId` requirement when `adjustMode = 'FORGOT_CHECKOUT'`
+- **Approval-time checks**: Re-validate `needsReconciliation` flag to prevent double-reconciliation race conditions
+- **Auto-rejection logic**: If session already reconciled, auto-reject request with reason code instead of throwing error
+
+### Excel Export Security (NEW v2.7)
+- **Formula injection prevention**: `sanitizeForExcel()` escapes leading `=`, `+`, `-`, `@`
+- **Memory management**: Stream-based Excel generation for large reports (ExcelJS library)
+- **Client-side security**: Blob API for downloads (no `window.open` XSS risk)
+- **Filename sanitization**: Remove special chars from user-controlled inputs
 
 ## MVP Definition of Done
 - Login works
