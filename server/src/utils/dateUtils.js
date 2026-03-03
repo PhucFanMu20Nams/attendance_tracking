@@ -69,6 +69,22 @@ export function getTimeInGMT7(date) {
 }
 
 /**
+ * Format Date to "HH:mm" in GMT+7.
+ * Returns empty string for invalid inputs.
+ *
+ * @param {Date} date
+ * @returns {string}
+ */
+export function formatTimeGMT7(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) {
+    return '';
+  }
+
+  const { hours, minutes } = getTimeInGMT7(date);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+/**
  * Calculate minutes difference between two Dates.
  * Used for: workMinutes, lateMinutes, otMinutes calculations.
  */

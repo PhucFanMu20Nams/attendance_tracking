@@ -1,6 +1,135 @@
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
+import Request from '../models/Request.js';
 import { computeAttendance, computePotentialOtMinutes } from '../utils/attendanceCompute.js';
+import {
+    countWorkdays,
+    formatTimeGMT7,
+    getDateRange,
+    getTodayDateKey,
+    isWeekend
+} from '../utils/dateUtils.js';
+
+const PRESENT_STATUSES = new Set([
+    'ON_TIME',
+    'LATE',
+    'EARLY_LEAVE',
+    'LATE_AND_EARLY',
+    'WORKING',
+    'MISSING_CHECKOUT'
+]);
+
+const EARLY_LEAVE_STATUSES = new Set(['EARLY_LEAVE', 'LATE_AND_EARLY']);
+const DEFAULT_LEAVE_TYPE = 'UNSPECIFIED';
+
+function getMonthBoundaries(month) {
+    const [year, monthNum] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+    const monthStart = `${month}-01`;
+    const monthEnd = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+    return { monthStart, monthEnd };
+}
+
+function getElapsedWindow(monthStart, monthEnd) {
+    const todayKey = getTodayDateKey();
+
+    if (todayKey < monthStart) {
+        return null; // Future month
+    }
+    if (todayKey > monthEnd) {
+        return { start: monthStart, end: monthEnd };
+    }
+
+    return { start: monthStart, end: todayKey };
+}
+
+function isWorkday(dateKey, holidayDates) {
+    return !isWeekend(dateKey) && !holidayDates.has(dateKey);
+}
+
+function buildWorkdaySet(startDate, endDate, holidayDates) {
+    const set = new Set();
+    if (!startDate || !endDate || startDate > endDate) {
+        return set;
+    }
+
+    for (const dateKey of getDateRange(startDate, endDate)) {
+        if (isWorkday(dateKey, holidayDates)) {
+            set.add(dateKey);
+        }
+    }
+
+    return set;
+}
+
+function normalizeLeaveType(rawType) {
+    if (rawType === 'ANNUAL' || rawType === 'SICK' || rawType === 'UNPAID') {
+        return rawType;
+    }
+    return DEFAULT_LEAVE_TYPE;
+}
+
+function createEmptyLeaveAggregate() {
+    return {
+        leaveDateSetFull: new Set(),
+        leaveDateSetElapsedWorkday: new Set(),
+        leaveTypeByDate: new Map()
+    };
+}
+
+function getLeaveByTypeCounts(leaveTypeByDate) {
+    const leaveByType = {
+        ANNUAL: 0,
+        SICK: 0,
+        UNPAID: 0,
+        UNSPECIFIED: 0
+    };
+
+    for (const leaveType of leaveTypeByDate.values()) {
+        leaveByType[leaveType] += 1;
+    }
+
+    return leaveByType;
+}
+
+function computeAbsentDays(elapsedWorkdaySet, presentDateSet, leaveDateSetElapsedWorkday) {
+    let absentDays = 0;
+
+    for (const dateKey of elapsedWorkdaySet) {
+        if (!presentDateSet.has(dateKey) && !leaveDateSetElapsedWorkday.has(dateKey)) {
+            absentDays += 1;
+        }
+    }
+
+    return absentDays;
+}
+
+function addLeaveDatesToAggregate(targetSet, leaveStart, leaveEnd, leaveType, holidayDates, leaveTypeByDate = null) {
+    if (!leaveStart || !leaveEnd || leaveStart > leaveEnd) {
+        return;
+    }
+
+    for (const dateKey of getDateRange(leaveStart, leaveEnd)) {
+        if (!isWorkday(dateKey, holidayDates)) {
+            continue;
+        }
+
+        targetSet.add(dateKey);
+        if (leaveTypeByDate && !leaveTypeByDate.has(dateKey)) {
+            leaveTypeByDate.set(dateKey, leaveType);
+        }
+    }
+}
+
+function intersectRange(rangeStart, rangeEnd, clipStart, clipEnd) {
+    if (!rangeStart || !rangeEnd || !clipStart || !clipEnd) {
+        return null;
+    }
+
+    const start = rangeStart > clipStart ? rangeStart : clipStart;
+    const end = rangeEnd < clipEnd ? rangeEnd : clipEnd;
+    return start <= end ? { start, end } : null;
+}
 
 /**
  * Get monthly report with summary per user.
@@ -45,7 +174,8 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
         : baseQuery;
 
     const users = await User.find(userQuery)
-        .select('_id name employeeCode')
+        .select('_id name employeeCode teamId')
+        .populate('teamId', 'name')
         .sort({ employeeCode: 1 })
         .lean();
 
@@ -53,12 +183,12 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
         return { summary: [] };
     }
 
-    // Query attendance records for the month
-    // P0 fix: Calculate daysInMonth to handle Feb (28/29) and 30-day months correctly
-    const [year, monthNum] = month.split('-').map(Number);
-    const daysInMonth = new Date(year, monthNum, 0).getDate();
-    const monthStart = `${month}-01`;
-    const monthEnd = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+    const { monthStart, monthEnd } = getMonthBoundaries(month);
+    const elapsedWindow = getElapsedWindow(monthStart, monthEnd);
+    const elapsedWorkdaySet = elapsedWindow
+        ? buildWorkdaySet(elapsedWindow.start, elapsedWindow.end, holidayDates)
+        : new Set();
+    const totalWorkdays = countWorkdays(monthStart, monthEnd, holidayDates);
 
     const userIds = users.map(u => u._id);
     const attendanceRecords = await Attendance.find({
@@ -66,6 +196,18 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
         date: { $gte: monthStart, $lte: monthEnd }
     })
         .select('userId date checkInAt checkOutAt otApproved')
+        .sort({ date: 1, checkInAt: 1 })
+        .lean();
+
+    const leaveRecords = await Request.find({
+        userId: { $in: userIds },
+        type: 'LEAVE',
+        status: 'APPROVED',
+        leaveStartDate: { $lte: monthEnd },
+        leaveEndDate: { $gte: monthStart }
+    })
+        .select('userId leaveType leaveStartDate leaveEndDate')
+        .sort({ leaveStartDate: 1, leaveEndDate: 1, _id: 1 })
         .lean();
 
     // Group attendance by userId for efficient processing
@@ -78,19 +220,88 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
         attendanceByUser.get(key).push(record);
     }
 
+    const leaveByUser = new Map();
+    for (const leaveRecord of leaveRecords) {
+        const key = String(leaveRecord.userId);
+        if (!leaveByUser.has(key)) {
+            leaveByUser.set(key, createEmptyLeaveAggregate());
+        }
+
+        const leaveAggregate = leaveByUser.get(key);
+        const leaveType = normalizeLeaveType(leaveRecord.leaveType);
+        const fullMonthRange = intersectRange(
+            leaveRecord.leaveStartDate,
+            leaveRecord.leaveEndDate,
+            monthStart,
+            monthEnd
+        );
+
+        if (fullMonthRange) {
+            addLeaveDatesToAggregate(
+                leaveAggregate.leaveDateSetFull,
+                fullMonthRange.start,
+                fullMonthRange.end,
+                leaveType,
+                holidayDates,
+                leaveAggregate.leaveTypeByDate
+            );
+        }
+
+        if (elapsedWindow && fullMonthRange) {
+            const elapsedRange = intersectRange(
+                fullMonthRange.start,
+                fullMonthRange.end,
+                elapsedWindow.start,
+                elapsedWindow.end
+            );
+
+            if (elapsedRange) {
+                addLeaveDatesToAggregate(
+                    leaveAggregate.leaveDateSetElapsedWorkday,
+                    elapsedRange.start,
+                    elapsedRange.end,
+                    leaveType,
+                    holidayDates,
+                    null
+                );
+            }
+        }
+    }
+
     // Compute summary for each user
     const summary = users.map(user => {
-        const userRecords = attendanceByUser.get(String(user._id)) || [];
+        const userKey = String(user._id);
+        const userRecords = attendanceByUser.get(userKey) || [];
         const computed = computeUserMonthlySummary(userRecords, holidayDates);
+        const leaveAggregate = leaveByUser.get(userKey) || createEmptyLeaveAggregate();
+        const leaveByType = getLeaveByTypeCounts(leaveAggregate.leaveTypeByDate);
+        const leaveDays = leaveAggregate.leaveDateSetFull.size;
+        const absentDays = computeAbsentDays(
+            elapsedWorkdaySet,
+            computed.presentDateSet,
+            leaveAggregate.leaveDateSetElapsedWorkday
+        );
+        const teamName = user?.teamId && typeof user.teamId === 'object'
+            ? (user.teamId.name || null)
+            : null;
 
         return {
             user: {
                 _id: user._id,
                 name: user.name,
-                employeeCode: user.employeeCode
+                employeeCode: user.employeeCode,
+                teamName
             },
+            totalWorkdays,
+            presentDays: computed.presentDays,
+            absentDays,
+            leaveDays,
+            leaveByType,
             totalWorkMinutes: computed.totalWorkMinutes,
             totalLateCount: computed.totalLateCount,
+            totalLateMinutes: computed.totalLateMinutes,
+            lateDetails: computed.lateDetails,
+            earlyLeaveCount: computed.earlyLeaveCount,
             totalOtMinutes: computed.totalOtMinutes,
             approvedOtMinutes: computed.approvedOtMinutes,
             unapprovedOtMinutes: computed.unapprovedOtMinutes
@@ -107,8 +318,12 @@ export const getMonthlyReport = async (scope, month, teamId, holidayDates = new 
 function computeUserMonthlySummary(records, holidayDates) {
     let totalWorkMinutes = 0;
     let totalLateCount = 0;
+    let totalLateMinutes = 0;
+    let earlyLeaveCount = 0;
     let approvedOtMinutes = 0;
     let unapprovedOtMinutes = 0;
+    const presentDateSet = new Set();
+    const lateDetails = [];
 
     for (const record of records) {
         const computed = computeAttendance(
@@ -124,10 +339,24 @@ function computeUserMonthlySummary(records, holidayDates) {
 
         totalWorkMinutes += computed.workMinutes || 0;
 
+        if (PRESENT_STATUSES.has(computed.status)) {
+            presentDateSet.add(record.date);
+        }
+
         // Count late by lateMinutes, not status
         // This ensures WORKING and MISSING_CHECKOUT records are counted if late
         if (computed.lateMinutes > 0) {
             totalLateCount += 1;
+            totalLateMinutes += computed.lateMinutes || 0;
+            lateDetails.push({
+                date: record.date,
+                checkInTime: formatTimeGMT7(record.checkInAt),
+                lateMinutes: computed.lateMinutes
+            });
+        }
+
+        if (EARLY_LEAVE_STATUSES.has(computed.status)) {
+            earlyLeaveCount += 1;
         }
 
         // H2: Track Approved vs Unapproved OT
@@ -146,10 +375,18 @@ function computeUserMonthlySummary(records, holidayDates) {
 
     // Total OT = only approved OT counts
     const totalOtMinutes = approvedOtMinutes;
+    lateDetails.sort((a, b) =>
+        a.date.localeCompare(b.date) || a.checkInTime.localeCompare(b.checkInTime)
+    );
 
     return {
+        presentDateSet,
+        presentDays: presentDateSet.size,
         totalWorkMinutes,
         totalLateCount,
+        totalLateMinutes,
+        lateDetails,
+        earlyLeaveCount,
         totalOtMinutes,
         approvedOtMinutes,
         unapprovedOtMinutes
