@@ -151,19 +151,22 @@ describe('Holiday Integration - Edge Cases', () => {
     });
 
     it('6. Holiday on last day of month (boundary)', async () => {
-        // Use past month to avoid P1 fix that stops at today for current month
-        await Holiday.create({ date: '2025-12-31', name: 'EOM Holiday' });
+        // Keep boundary in the same test month to avoid cross-month coupling
+        await Holiday.create({ date: '2026-01-31', name: 'EOM Holiday' });
         await Attendance.create({
-            userId: employeeId, date: '2025-12-31',
-            checkInAt: new Date('2025-12-31T08:30:00+07:00'),
-            checkOutAt: new Date('2025-12-31T17:30:00+07:00')
+            userId: employeeId, date: '2026-01-31',
+            checkInAt: new Date('2026-01-31T08:30:00+07:00'),
+            checkOutAt: new Date('2026-01-31T17:30:00+07:00')
         });
 
         const res = await request(app)
-            .get('/api/attendance/me?month=2025-12')
+            .get(`/api/attendance/me?month=${TEST_MONTH}`)
             .set('Authorization', `Bearer ${employeeToken}`);
 
-        const record = res.body.items.find(i => i.date === '2025-12-31');
+        expect(res.status).toBe(200);
+        expect(Array.isArray(res.body.items)).toBe(true);
+        const record = res.body.items.find(i => i.date === '2026-01-31');
+        expect(record).toBeDefined();
         expect(record.status).toBe('WEEKEND_OR_HOLIDAY');
     });
 
