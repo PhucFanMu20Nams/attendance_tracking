@@ -42,8 +42,49 @@ export default function ApprovalModal({
         });
     };
 
+    const getVnDateKey = (isoString) => {
+        if (!isoString) return '';
+        const date = new Date(isoString);
+        if (isNaN(date.getTime())) return '';
+        return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Ho_Chi_Minh' });
+    };
+
+    const formatOtEndTime = (estimatedEndTime, requestDate) => {
+        if (!estimatedEndTime) return '--:--';
+        const time = formatTime(estimatedEndTime);
+        const endDateKey = getVnDateKey(estimatedEndTime);
+        if (!requestDate || !endDateKey || endDateKey === requestDate) return time;
+        return `${time} (${formatDate(endDateKey)})`;
+    };
+
+    const formatOtDuration = (estimatedEndTime, requestDate) => {
+        if (!estimatedEndTime || !requestDate) return null;
+
+        const otStart = new Date(`${requestDate}T17:31:00+07:00`);
+        const otEnd = new Date(estimatedEndTime);
+        if (isNaN(otStart.getTime()) || isNaN(otEnd.getTime())) return null;
+
+        const diffMinutes = Math.floor((otEnd - otStart) / 60000);
+        if (diffMinutes <= 0) return null;
+
+        const hours = Math.floor(diffMinutes / 60);
+        const minutes = diffMinutes % 60;
+        return `${hours}h ${minutes}m`;
+    };
+
+    const getLeaveTypeLabel = (type) => {
+        const labels = {
+            ANNUAL: 'Phép năm',
+            SICK: 'Ốm đau',
+            UNPAID: 'Không lương',
+        };
+        return labels[type] || 'Nghỉ phép';
+    };
+
     const isApprove = action === 'approve';
     const actionLabel = isApprove ? 'duyệt' : 'từ chối';
+    const requestDate = request?.date || request?.checkInDate;
+    const otDuration = formatOtDuration(request?.estimatedEndTime, requestDate);
 
     return (
         <Modal show={show} onClose={loading ? () => {} : onClose} size="md">
@@ -65,10 +106,64 @@ export default function ApprovalModal({
                     </p>
 
                     <div className="bg-gray-50 p-3 rounded text-sm space-y-1">
-                        <p><span className="text-gray-500">Ngày:</span> {formatDate(request?.date)}</p>
-                        <p><span className="text-gray-500">Check-in:</span> {formatTime(request?.requestedCheckInAt)}</p>
-                        <p><span className="text-gray-500">Check-out:</span> {formatTime(request?.requestedCheckOutAt)}</p>
-                        <p><span className="text-gray-500">Lý do:</span> {request?.reason}</p>
+                        {request?.type === 'OT_REQUEST' ? (
+                            <>
+                                <p><span className="text-gray-500">Ngày:</span> {formatDate(requestDate)}</p>
+                                <p>
+                                    <span className="text-gray-500">Dự kiến về:</span>{' '}
+                                    {formatOtEndTime(request?.estimatedEndTime, requestDate)}
+                                </p>
+                                {otDuration && (
+                                    <p>
+                                        <span className="text-gray-500">Thời lượng OT dự kiến:</span>{' '}
+                                        <span className="font-medium text-purple-700">{otDuration}</span>
+                                    </p>
+                                )}
+                                <p>
+                                    <span className="text-gray-500">Check-in thực tế:</span>{' '}
+                                    {request?.attendance?.checkInAt
+                                        ? formatTime(request.attendance.checkInAt)
+                                        : 'Chưa check-in'}
+                                </p>
+                                <p>
+                                    <span className="text-gray-500">Check-out thực tế:</span>{' '}
+                                    {request?.attendance?.checkOutAt
+                                        ? formatTime(request.attendance.checkOutAt)
+                                        : 'Chưa check-out'}
+                                </p>
+                                <p><span className="text-gray-500">Lý do:</span> {request?.reason}</p>
+                            </>
+                        ) : request?.type === 'ADJUST_TIME' ? (
+                            <>
+                                <p><span className="text-gray-500">Ngày:</span> {formatDate(requestDate)}</p>
+                                <p><span className="text-gray-500">Check-in:</span> {formatTime(request?.requestedCheckInAt)}</p>
+                                <p><span className="text-gray-500">Check-out:</span> {formatTime(request?.requestedCheckOutAt)}</p>
+                                <p><span className="text-gray-500">Lý do:</span> {request?.reason}</p>
+                            </>
+                        ) : request?.type === 'LEAVE' ? (
+                            <>
+                                <p>
+                                    <span className="text-gray-500">Khoảng nghỉ:</span>{' '}
+                                    {formatDate(request?.leaveStartDate)} → {formatDate(request?.leaveEndDate)}
+                                </p>
+                                <p>
+                                    <span className="text-gray-500">Loại nghỉ:</span>{' '}
+                                    {getLeaveTypeLabel(request?.leaveType)}
+                                </p>
+                                {typeof request?.leaveDaysCount === 'number' && (
+                                    <p>
+                                        <span className="text-gray-500">Số ngày làm việc:</span>{' '}
+                                        {request.leaveDaysCount} ngày
+                                    </p>
+                                )}
+                                <p><span className="text-gray-500">Lý do:</span> {request?.reason}</p>
+                            </>
+                        ) : (
+                            <>
+                                <p><span className="text-gray-500">Ngày:</span> {formatDate(requestDate || request?.leaveStartDate)}</p>
+                                <p><span className="text-gray-500">Lý do:</span> {request?.reason}</p>
+                            </>
+                        )}
                     </div>
                 </div>
             </Modal.Body>
