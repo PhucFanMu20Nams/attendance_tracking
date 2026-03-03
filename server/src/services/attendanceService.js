@@ -398,21 +398,21 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
   // Step 4: Compute status for each user
   const items = users.map(user => {
     const attendance = attendanceMap.get(String(user._id)) || null;
+    const isTodayWeekendOrHoliday = isWeekend(todayKey) || holidayDates.has(todayKey);
 
     // Compute status following RULES.md priority
     let status = null;
     let lateMinutes = 0;
+    let workMinutes = 0;
+    let otMinutes = 0;
 
-    // Priority 1: Weekend/Holiday check first
-    if (isWeekend(todayKey) || holidayDates.has(todayKey)) {
-      status = 'WEEKEND_OR_HOLIDAY';
-    }
-    // Priority 2: No attendance record = null (NOT ABSENT for today)
-    else if (!attendance) {
-      status = null;
-    }
-    // Priority 3: Has attendance record, compute status
-    else {
+    // No attendance record:
+    // - weekend/holiday => WEEKEND_OR_HOLIDAY
+    // - workday => null (NOT ABSENT for today)
+    if (!attendance) {
+      status = isTodayWeekendOrHoliday ? 'WEEKEND_OR_HOLIDAY' : null;
+    } else {
+      // Has attendance record: always compute to include work/OT metrics
       const computed = computeAttendance(
         { 
           date: todayKey, 
@@ -425,6 +425,8 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
       );
       status = computed.status;
       lateMinutes = computed.lateMinutes;
+      workMinutes = computed.workMinutes;
+      otMinutes = computed.otMinutes;
     }
 
     return {
@@ -446,7 +448,9 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
       } : null,
       computed: {
         status,
-        lateMinutes
+        lateMinutes,
+        workMinutes,
+        otMinutes
       }
     };
   });
