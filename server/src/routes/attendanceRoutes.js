@@ -10,6 +10,7 @@ const router = express.Router();
 router.post('/check-in', authenticate, attendanceController.checkIn);
 router.post('/check-out', authenticate, attendanceController.checkOut);
 router.get('/me', authenticate, attendanceController.getMyAttendance);
+router.get('/open-session', authenticate, attendanceController.getOpenSession);
 
 // Member Management: Today activity (Manager/Admin only)
 router.get('/today', authenticate, attendanceController.getTodayAttendance);

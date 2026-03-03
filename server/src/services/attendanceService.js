@@ -5,7 +5,7 @@ import Request from '../models/Request.js';
 import { getTodayDateKey, isWeekend } from '../utils/dateUtils.js';
 import { computeAttendance } from '../utils/attendanceCompute.js';
 import { clampPage } from '../utils/pagination.js';
-import { getCheckoutGraceMs } from '../utils/graceConfig.js';
+import { getAdjustRequestMaxDays, getAdjustRequestMaxMs, getCheckoutGraceMs } from '../utils/graceConfig.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 
 /**
@@ -22,12 +22,14 @@ export const checkIn = async (userId) => {
   const earliestAllowed = new Date(Date.now() - graceMs);
 
   // Check for ANY open session (cross-midnight OT: not limited to today)
-  // Sort by oldest first to ensure deterministic behavior if multiple sessions exist
-  const openSession = await Attendance.findOne({
+  // Load up to 2 to detect anomalies (multiple open sessions) without scanning all docs.
+  const openSessions = await Attendance.find({
     userId,
     checkInAt: { $exists: true, $ne: null },
     checkOutAt: null
-  }).sort({ checkInAt: 1 }).select('date checkInAt').lean();
+  }).sort({ checkInAt: 1 }).limit(2).select('_id date checkInAt').lean();
+
+  const openSession = openSessions[0] || null;
 
   if (openSession) {
     // Log if stale (outside grace period)
@@ -44,11 +46,44 @@ export const checkIn = async (userId) => {
       }).catch(() => {});
     }
 
-    // Block check-in (strict policy: must checkout first)
+    const isAnomaly = openSessions.length > 1;
+    const openSessionCount = isAnomaly
+      ? await Attendance.countDocuments({
+        userId,
+        checkInAt: { $exists: true, $ne: null },
+        checkOutAt: null
+      })
+      : openSessions.length;
+
+    if (isAnomaly) {
+      AuditLog.create({
+        type: 'MULTIPLE_ACTIVE_SESSIONS',
+        userId,
+        details: {
+          sessionCount: openSessionCount,
+          sessions: openSessions
+        }
+      }).catch(() => {});
+    }
+
+    // Block check-in when open sessions still exist.
+    // Guardrail: needsReconciliation must NEVER block check-in by itself.
     const error = new Error(
       `You have an open session from ${openSession.date}. Please checkout first.`
     );
-    error.statusCode = 400;
+    error.statusCode = isAnomaly ? 409 : 400;
+    error.code = isAnomaly ? 'OPEN_SESSION_ANOMALY' : 'OPEN_SESSION_BLOCKED';
+    error.payload = {
+      openSession: {
+        id: String(openSession._id),
+        date: openSession.date,
+        checkInAt: openSession.checkInAt
+      },
+      openSessionCount,
+      resolutionPath: isAnomaly
+        ? 'CONTACT_ADMIN_FORCE_CHECKOUT'
+        : 'CHECKOUT_CURRENT_SESSION'
+    };
     throw error;
   }
 
@@ -172,7 +207,14 @@ export const checkOut = async (userId) => {
   const targetSession = openSessions[0]; // Already sorted newest first
   const updated = await Attendance.findOneAndUpdate(
     { _id: targetSession._id, checkOutAt: null },
-    { $set: { checkOutAt: new Date() } },
+    {
+      $set: {
+        checkOutAt: new Date(),
+        closeSource: 'USER_CHECKOUT',
+        closedByRequestId: null,
+        needsReconciliation: false
+      }
+    },
     { new: true, runValidators: true }
   );
 
@@ -540,6 +582,9 @@ export const forceCheckoutAttendance = async (attendanceId, checkOutDate) => {
 
   // Perform forced checkout
   attendance.checkOutAt = checkOutDate;
+  attendance.closeSource = 'ADMIN_FORCE';
+  attendance.closedByRequestId = null;
+  attendance.needsReconciliation = false;
   await attendance.save();
 
   return {
@@ -549,4 +594,166 @@ export const forceCheckoutAttendance = async (attendanceId, checkOutDate) => {
     checkInAt: attendance.checkInAt,
     checkOutAt: attendance.checkOutAt
   };
+};
+
+/**
+ * Get check-in blocking and reconciliation context for the current user.
+ * Used by UI to decide whether to show "forgot checkout" path without trial-and-error.
+ *
+ * @param {string} userId - Current user id
+ * @returns {Promise<Object>} Open session / reconciliation context
+ */
+export const getOpenSessionContext = async (userId) => {
+  const adjustWindowMs = getAdjustRequestMaxMs();
+  const adjustWindowDays = getAdjustRequestMaxDays();
+  const escalationMs = 4 * 60 * 60 * 1000; // 4 working hours (Phase A data signal only)
+  const now = Date.now();
+
+  const openSessions = await Attendance.find({
+    userId,
+    checkInAt: { $exists: true, $ne: null },
+    checkOutAt: null
+  })
+    .sort({ checkInAt: 1 })
+    .limit(20)
+    .select('_id date checkInAt checkOutAt')
+    .lean();
+
+  const openSession = openSessions[0] || null;
+
+  const needsReconciliation = await Attendance.find({
+    userId,
+    closeSource: 'SYSTEM_AUTO_MIDNIGHT',
+    needsReconciliation: true
+  })
+    .sort({ date: -1, updatedAt: -1 })
+    .limit(20)
+    .select('_id date checkInAt checkOutAt closeSource needsReconciliation updatedAt')
+    .lean();
+
+  const reconciliationItems = [];
+  for (const session of needsReconciliation) {
+    const pendingReq = await Request.findOne({
+      userId,
+      type: 'ADJUST_TIME',
+      adjustMode: 'FORGOT_CHECKOUT',
+      targetAttendanceId: session._id,
+      status: 'PENDING'
+    }).select('_id createdAt').lean();
+
+    const checkInAtMs = session.checkInAt ? new Date(session.checkInAt).getTime() : 0;
+    const submitDeadline = checkInAtMs ? new Date(checkInAtMs + adjustWindowMs) : null;
+
+    reconciliationItems.push({
+      attendanceId: String(session._id),
+      date: session.date,
+      checkInAt: session.checkInAt,
+      checkOutAt: session.checkOutAt,
+      submitDeadline,
+      adjustWindowDays,
+      isOverdue: submitDeadline ? now > submitDeadline.getTime() : false,
+      pendingRequestId: pendingReq?._id ? String(pendingReq._id) : null,
+      pendingRequestCreatedAt: pendingReq?.createdAt || null,
+      isEscalated: pendingReq?.createdAt
+        ? (now - new Date(pendingReq.createdAt).getTime()) > escalationMs
+        : false
+    });
+  }
+
+  return {
+    openSessionCount: openSessions.length,
+    hasAnomaly: openSessions.length > 1,
+    openSession: openSession
+      ? {
+        attendanceId: String(openSession._id),
+        date: openSession.date,
+        checkInAt: openSession.checkInAt
+      }
+      : null,
+    needsReconciliationCount: reconciliationItems.length,
+    needsReconciliation: reconciliationItems
+  };
+};
+
+/**
+ * Admin queue for open sessions and pending forgot-checkout reconciliations.
+ *
+ * @param {Object} options - Query options
+ * @param {string} options.status - all | open | reconciliation
+ * @param {number} options.limit - Max items to return
+ * @returns {Promise<Array>} Queue items
+ */
+export const getAdminOpenSessionsQueue = async (options = {}) => {
+  const adjustWindowMs = getAdjustRequestMaxMs();
+  const escalationMs = 4 * 60 * 60 * 1000; // 4 working hours (Phase A data signal only)
+  const now = Date.now();
+  const status = typeof options.status === 'string'
+    ? options.status.trim().toLowerCase()
+    : 'all';
+  const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, options.limit)) : 100;
+
+  let filter;
+  if (status === 'open') {
+    filter = { checkOutAt: null };
+  } else if (status === 'reconciliation') {
+    filter = { needsReconciliation: true };
+  } else {
+    filter = {
+      $or: [
+        { checkOutAt: null },
+        { needsReconciliation: true }
+      ]
+    };
+  }
+
+  const records = await Attendance.find(filter)
+    .sort({ date: 1, checkInAt: 1 })
+    .limit(limit)
+    .select('_id userId date checkInAt checkOutAt closeSource needsReconciliation closedByRequestId updatedAt')
+    .populate('userId', 'name employeeCode email role teamId')
+    .lean();
+
+  const items = await Promise.all(records.map(async (record) => {
+    const checkInAtMs = record.checkInAt ? new Date(record.checkInAt).getTime() : 0;
+    const submitDeadline = checkInAtMs ? new Date(checkInAtMs + adjustWindowMs) : null;
+    const pendingReq = record.needsReconciliation
+      ? await Request.findOne({
+        userId: record.userId?._id || record.userId,
+        type: 'ADJUST_TIME',
+        adjustMode: 'FORGOT_CHECKOUT',
+        targetAttendanceId: record._id,
+        status: 'PENDING'
+      }).select('_id createdAt').lean()
+      : null;
+
+    const isEscalated = pendingReq?.createdAt
+      ? (now - new Date(pendingReq.createdAt).getTime()) > escalationMs
+      : false;
+
+    const queueStatus = record.checkOutAt == null
+      ? 'OPEN'
+      : (record.needsReconciliation
+        ? (isEscalated ? 'ESCALATED' : 'PENDING_RECONCILIATION')
+        : 'CLOSED');
+
+    return {
+      attendanceId: String(record._id),
+      user: record.userId || null,
+      date: record.date,
+      checkInAt: record.checkInAt,
+      checkOutAt: record.checkOutAt,
+      closeSource: record.closeSource || 'LEGACY',
+      needsReconciliation: !!record.needsReconciliation,
+      closedByRequestId: record.closedByRequestId ? String(record.closedByRequestId) : null,
+      queueStatus,
+      submitDeadline,
+      isOverdue: submitDeadline ? now > submitDeadline.getTime() : false,
+      pendingRequestId: pendingReq?._id ? String(pendingReq._id) : null,
+      pendingRequestCreatedAt: pendingReq?.createdAt || null,
+      isEscalated,
+      updatedAt: record.updatedAt
+    };
+  }));
+
+  return items;
 };
