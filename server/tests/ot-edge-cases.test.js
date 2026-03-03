@@ -948,9 +948,24 @@ describe('OT Computation Decision Table (Unit Tests)', () => {
       };
       const result = computeAttendance(attendance);
       expect(result.status).toBe('WEEKEND_OR_HOLIDAY');
-      // Weekend forces otApproved=true in compute
-      expect(result.otMinutes).toBeGreaterThanOrEqual(0);
-      expect(result.workMinutes).toBeGreaterThan(0);
+      // 09:00 -> 18:00 = 9h, spans lunch => 8h = 480 minutes
+      expect(result.workMinutes).toBe(480);
+      expect(result.otMinutes).toBe(480);
+    });
+
+    it('should compute all Sunday morning work as OT', () => {
+      const sundayKey = '2026-03-08'; // Sunday
+      const attendance = {
+        date: sundayKey,
+        checkInAt: createTimeInGMT7(sundayKey, 8, 0),
+        checkOutAt: createTimeInGMT7(sundayKey, 11, 0),
+        otApproved: false
+      };
+
+      const result = computeAttendance(attendance);
+      expect(result.status).toBe('WEEKEND_OR_HOLIDAY');
+      expect(result.workMinutes).toBe(180);
+      expect(result.otMinutes).toBe(180);
     });
 
     it('should handle holiday with otApproved=false (forced true)', () => {
@@ -963,7 +978,65 @@ describe('OT Computation Decision Table (Unit Tests)', () => {
       };
       const result = computeAttendance(attendance, holidayDates);
       expect(result.status).toBe('WEEKEND_OR_HOLIDAY');
-      expect(result.workMinutes).toBeGreaterThan(0);
+      expect(result.workMinutes).toBe(480);
+      expect(result.otMinutes).toBe(480);
+    });
+
+    // ─── Weekend path verification (does NOT use computeOtMinutes) ──
+
+    it('should NOT use computeOtMinutes path for weekend (otMinutes = full work, not post-17:31)', () => {
+      // Saturday 09:00-16:00: checkout BEFORE 17:31
+      // If weekday logic were used: otMinutes=0 (checkout before 17:31)
+      // Weekend logic: otMinutes = workMinutes
+      const saturdayKey = '2026-02-14'; // Saturday
+      const attendance = {
+        date: saturdayKey,
+        checkInAt: createTimeInGMT7(saturdayKey, 9, 0),
+        checkOutAt: createTimeInGMT7(saturdayKey, 16, 0),
+        otApproved: false
+      };
+      const result = computeAttendance(attendance);
+      expect(result.status).toBe('WEEKEND_OR_HOLIDAY');
+      // 09:00→16:00 = 7h = 420 min, spans lunch → 420 - 60 = 360
+      expect(result.workMinutes).toBe(360);
+      expect(result.otMinutes).toBe(360);
+      // Verify otMinutes is NOT 0 (which computeOtMinutes would return for pre-17:31 checkout)
+      expect(result.otMinutes).toBeGreaterThan(0);
+    });
+
+    it('should NOT use computePotentialOtMinutes for weekend (otMinutes = weekendMinutes)', () => {
+      // Saturday with checkout at 20:00
+      // computePotentialOtMinutes would return 149 (20:00 - 17:31)
+      // Weekend logic should return full workMinutes instead
+      const saturdayKey = '2026-02-14'; // Saturday
+      const attendance = {
+        date: saturdayKey,
+        checkInAt: createTimeInGMT7(saturdayKey, 9, 0),
+        checkOutAt: createTimeInGMT7(saturdayKey, 20, 0),
+        otApproved: false
+      };
+      const result = computeAttendance(attendance);
+      expect(result.status).toBe('WEEKEND_OR_HOLIDAY');
+      // 09:00→20:00 = 11h = 660 min, spans lunch → 660 - 60 = 600
+      expect(result.workMinutes).toBe(600);
+      expect(result.otMinutes).toBe(600);
+      // NOT 149 from computePotentialOtMinutes
+      expect(result.otMinutes).not.toBe(149);
+    });
+
+    it('should not affect weekday OT behavior (regression guard)', () => {
+      // Tuesday 09:00-20:00, otApproved=false
+      // Must still return otMinutes=0 (weekday path, strict rule)
+      const attendance = {
+        date: dateKey, // Tuesday 2026-02-10
+        checkInAt: gmt7(9, 0),
+        checkOutAt: gmt7(20, 0),
+        otApproved: false
+      };
+      const result = computeAttendance(attendance);
+      expect(result.status).not.toBe('WEEKEND_OR_HOLIDAY');
+      expect(result.otMinutes).toBe(0); // Strict: no approval = no OT on weekday
+      expect(result.workMinutes).toBe(450); // Capped at 17:30: 09:00→17:30 = 8.5h - 1h lunch = 450
     });
   });
 });
