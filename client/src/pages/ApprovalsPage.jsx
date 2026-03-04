@@ -1,9 +1,15 @@
 import { useState } from 'react';
-import { Alert, Spinner } from 'flowbite-react';
+import { Alert, Spinner, Tabs } from 'flowbite-react';
 import { usePagination } from '../hooks/usePagination';
-import { getPendingRequests, approveRequest, rejectRequest } from '../api/requestApi';
+import {
+    getPendingRequests,
+    getApprovalHistory,
+    approveRequest,
+    rejectRequest
+} from '../api/requestApi';
 import PendingRequestsTable from '../components/approvals/PendingRequestsTable';
 import ApprovalModal from '../components/approvals/ApprovalModal';
+import ApprovalHistoryTable from '../components/approvals/ApprovalHistoryTable';
 
 /**
  * ApprovalsPage: Manager/Admin views pending requests + approve/reject.
@@ -16,21 +22,26 @@ import ApprovalModal from '../components/approvals/ApprovalModal';
  * Refactored from 248 lines to ~120 lines
  */
 export default function ApprovalsPage() {
+    // Tab state (Flowbite Tabs uses numeric index)
+    const [activeTabIndex, setActiveTabIndex] = useState(0); // 0: pending, 1: history
+
     // Modal states
     const [modalOpen, setModalOpen] = useState(false);
     const [modalAction, setModalAction] = useState(null); // 'approve' | 'reject'
     const [selectedRequest, setSelectedRequest] = useState(null);
+    const [rejectReason, setRejectReason] = useState('');
     const [actionLoading, setActionLoading] = useState(false);
     const [actionError, setActionError] = useState('');
+    const [historyStatusFilter, setHistoryStatusFilter] = useState('');
 
     // Paginated pending requests
     const {
-        items: requests,
-        pagination,
-        loading,
-        error,
-        setPage,
-        refetch
+        items: pendingRequests,
+        pagination: pendingPagination,
+        loading: pendingLoading,
+        error: pendingError,
+        setPage: setPendingPage,
+        refetch: refetchPending
     } = usePagination({
         fetchFn: async (params, signal) => {
             const res = await getPendingRequests(params, { signal });
@@ -38,13 +49,34 @@ export default function ApprovalsPage() {
                 items: res.data.items ?? [],
                 pagination: res.data.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 }
             };
-        }
+        },
+        enabled: activeTabIndex === 0
+    });
+
+    // Paginated approval history
+    const {
+        items: historyRequests,
+        pagination: historyPagination,
+        loading: historyLoading,
+        error: historyError,
+        setPage: setHistoryPage
+    } = usePagination({
+        fetchFn: async (params, signal) => {
+            const res = await getApprovalHistory(params, { signal });
+            return {
+                items: res.data.items ?? [],
+                pagination: res.data.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 1 }
+            };
+        },
+        extraParams: historyStatusFilter ? { status: historyStatusFilter } : {},
+        enabled: activeTabIndex === 1
     });
 
     // Modal handlers
     const handleOpenModal = (request, action) => {
         setSelectedRequest(request);
         setModalAction(action);
+        setRejectReason('');
         setActionError('');
         setModalOpen(true);
     };
@@ -54,7 +86,13 @@ export default function ApprovalsPage() {
         setModalOpen(false);
         setSelectedRequest(null);
         setModalAction(null);
+        setRejectReason('');
         setActionError('');
+    };
+
+    const handleHistoryStatusChange = (status) => {
+        setHistoryStatusFilter(status);
+        setHistoryPage(1);
     };
 
     const handleConfirm = async () => {
@@ -71,7 +109,7 @@ export default function ApprovalsPage() {
             if (modalAction === 'approve') {
                 await approveRequest(selectedRequest._id);
             } else if (modalAction === 'reject') {
-                await rejectRequest(selectedRequest._id);
+                await rejectRequest(selectedRequest._id, rejectReason);
             } else {
                 return; // Invalid action
             }
@@ -80,10 +118,11 @@ export default function ApprovalsPage() {
             setModalOpen(false);
             setSelectedRequest(null);
             setModalAction(null);
+            setRejectReason('');
             setActionError('');
 
             // Force refetch to update list (works even on page 1)
-            refetch();
+            refetchPending();
         } catch (err) {
             setActionError(err.response?.data?.message || 
                 `${modalAction === 'approve' ? 'Duyệt' : 'Từ chối'} thất bại`);
@@ -97,35 +136,63 @@ export default function ApprovalsPage() {
             {/* Page Title */}
             <h1 className="text-2xl font-bold text-gray-800">
                 Duyệt yêu cầu
-                {pagination.total > 0 && (
-                    <span className="text-sm font-normal text-gray-500 ml-2">
-                        ({pagination.total} yêu cầu đang chờ)
-                    </span>
-                )}
             </h1>
 
-            {/* Error Alert */}
-            {error && (
-                <Alert color="failure">
-                    {error}
-                </Alert>
-            )}
+            <Tabs
+                variant="underline"
+                onActiveTabChange={(index) => setActiveTabIndex(index)}
+            >
+                <Tabs.Item
+                    title={`Đang chờ (${pendingPagination.total ?? 0})`}
+                    active
+                >
+                    <div className="space-y-4">
+                        {pendingError && (
+                            <Alert color="failure">
+                                {pendingError}
+                            </Alert>
+                        )}
 
-            {/* Pending Requests Table */}
-            {loading ? (
-                <div className="flex justify-center py-12">
-                    <Spinner size="lg" />
-                </div>
-            ) : (
-                <PendingRequestsTable
-                    requests={requests}
-                    pagination={pagination}
-                    onPageChange={setPage}
-                    onApprove={(req) => handleOpenModal(req, 'approve')}
-                    onReject={(req) => handleOpenModal(req, 'reject')}
-                    actionLoading={actionLoading}
-                />
-            )}
+                        {pendingLoading ? (
+                            <div className="flex justify-center py-12">
+                                <Spinner size="lg" />
+                            </div>
+                        ) : (
+                            <PendingRequestsTable
+                                requests={pendingRequests}
+                                pagination={pendingPagination}
+                                onPageChange={setPendingPage}
+                                onApprove={(req) => handleOpenModal(req, 'approve')}
+                                onReject={(req) => handleOpenModal(req, 'reject')}
+                                actionLoading={actionLoading}
+                            />
+                        )}
+                    </div>
+                </Tabs.Item>
+                <Tabs.Item title="Lịch sử">
+                    <div className="space-y-4">
+                        {historyError && (
+                            <Alert color="failure">
+                                {historyError}
+                            </Alert>
+                        )}
+
+                        {historyLoading ? (
+                            <div className="flex justify-center py-12">
+                                <Spinner size="lg" />
+                            </div>
+                        ) : (
+                            <ApprovalHistoryTable
+                                requests={historyRequests}
+                                pagination={historyPagination}
+                                onPageChange={setHistoryPage}
+                                statusFilter={historyStatusFilter}
+                                onStatusFilterChange={handleHistoryStatusChange}
+                            />
+                        )}
+                    </div>
+                </Tabs.Item>
+            </Tabs>
 
             {/* Confirmation Modal */}
             <ApprovalModal
@@ -134,6 +201,8 @@ export default function ApprovalsPage() {
                 action={modalAction}
                 loading={actionLoading}
                 error={actionError}
+                rejectReason={rejectReason}
+                onRejectReasonChange={setRejectReason}
                 onConfirm={handleConfirm}
                 onClose={handleCloseModal}
             />
