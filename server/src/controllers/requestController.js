@@ -33,6 +33,8 @@ export const createRequest = async (req, res) => {
       leaveEndDate,
       leaveType,
       estimatedEndTime,
+      otMode,
+      otStartTime,
       reason 
     } = req.body;
 
@@ -57,10 +59,24 @@ export const createRequest = async (req, res) => {
           message: 'date and estimatedEndTime are required for OT requests' 
         });
       }
+
+      const normalizedOtMode = otMode || 'CONTINUOUS';
+      if (!['CONTINUOUS', 'SEPARATED'].includes(normalizedOtMode)) {
+        return res.status(400).json({
+          message: 'otMode must be CONTINUOUS or SEPARATED'
+        });
+      }
+      if (normalizedOtMode === 'SEPARATED' && !otStartTime) {
+        return res.status(400).json({
+          message: 'otStartTime is required for SEPARATED OT'
+        });
+      }
       
       request = await requestService.createOtRequest(userId, {
         date,
         estimatedEndTime,
+        otMode: normalizedOtMode,
+        otStartTime: normalizedOtMode === 'SEPARATED' ? otStartTime : null,
         reason
       });
     } else if (type === 'LEAVE') {
