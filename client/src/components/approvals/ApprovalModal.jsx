@@ -57,19 +57,12 @@ export default function ApprovalModal({
         return `${time} (${formatDate(endDateKey)})`;
     };
 
-    const formatOtDuration = (estimatedEndTime, requestDate) => {
-        if (!estimatedEndTime || !requestDate) return null;
-
-        const otStart = new Date(`${requestDate}T17:31:00+07:00`);
-        const otEnd = new Date(estimatedEndTime);
-        if (isNaN(otStart.getTime()) || isNaN(otEnd.getTime())) return null;
-
-        const diffMinutes = Math.floor((otEnd - otStart) / 60000);
-        if (diffMinutes <= 0) return null;
-
-        const hours = Math.floor(diffMinutes / 60);
-        const minutes = diffMinutes % 60;
-        return `${hours}h ${minutes}m`;
+    const formatOtPreviewDuration = (preview) => {
+        const minutes = Number(preview?.minutes || 0);
+        if (!Number.isFinite(minutes) || minutes <= 0) return null;
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return `${hours}h ${mins}m`;
     };
 
     const getLeaveTypeLabel = (type) => {
@@ -84,7 +77,7 @@ export default function ApprovalModal({
     const isApprove = action === 'approve';
     const actionLabel = isApprove ? 'duyệt' : 'từ chối';
     const requestDate = request?.date || request?.checkInDate;
-    const otDuration = formatOtDuration(request?.estimatedEndTime, requestDate);
+    const otDuration = formatOtPreviewDuration(request?.otPreview);
 
     return (
         <Modal show={show} onClose={loading ? () => {} : onClose} size="md">
@@ -109,6 +102,16 @@ export default function ApprovalModal({
                         {request?.type === 'OT_REQUEST' ? (
                             <>
                                 <p><span className="text-gray-500">Ngày:</span> {formatDate(requestDate)}</p>
+                                <p>
+                                    <span className="text-gray-500">Loại OT:</span>{' '}
+                                    {request?.otMode === 'SEPARATED' ? 'Phiên tách rời' : 'Liên tục'}
+                                </p>
+                                {request?.otMode === 'SEPARATED' && (
+                                    <p>
+                                        <span className="text-gray-500">Bắt đầu OT:</span>{' '}
+                                        {formatOtEndTime(request?.otPreview?.startTime || request?.otStartTime, requestDate)}
+                                    </p>
+                                )}
                                 <p>
                                     <span className="text-gray-500">Dự kiến về:</span>{' '}
                                     {formatOtEndTime(request?.estimatedEndTime, requestDate)}
