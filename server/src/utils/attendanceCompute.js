@@ -76,7 +76,7 @@ function normalizeTimestamp(timestamp) {
  * 
  * Phase 2.1 (OT_REQUEST): Added otApproved parameter for OT approval-based calculation
  * 
- * @param {Object} attendance - { date, checkInAt, checkOutAt, otApproved }
+ * @param {Object} attendance - { date, checkInAt, checkOutAt, otApproved, otMode, separatedOtMinutes }
  * @param {Set<string>} holidayDates - Set of "YYYY-MM-DD" holiday dates (optional)
  * @param {Set<string>} leaveDates - Set of "YYYY-MM-DD" approved leave dates (optional, Phase 3)
  * @returns {Object} { status, lateMinutes, workMinutes, otMinutes }
@@ -87,7 +87,14 @@ export function computeAttendance(attendance, holidayDates = new Set(), leaveDat
     return { status: 'UNKNOWN', lateMinutes: 0, workMinutes: 0, otMinutes: 0 };
   }
 
-  const { date, checkInAt, checkOutAt, otApproved = false } = attendance;
+  const {
+    date,
+    checkInAt,
+    checkOutAt,
+    otApproved = false,
+    otMode = 'CONTINUOUS',
+    separatedOtMinutes = 0
+  } = attendance;
 
   // Fix #2: Normalize date to "YYYY-MM-DD" format for consistent lookups
   const dateKey = normalizeDateKey(date);
@@ -195,8 +202,8 @@ export function computeAttendance(attendance, holidayDates = new Set(), leaveDat
     }
     
     const lateMinutes = computeLateMinutes(dateKey, checkIn);
-    const workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut, otApproved);
-    const otMinutes = computeOtMinutes(dateKey, checkOut, otApproved);
+    const workMinutes = computeWorkMinutes(dateKey, checkIn, checkOut, otApproved, otMode);
+    const otMinutes = computeOtMinutes(dateKey, checkOut, otApproved, otMode, separatedOtMinutes);
     const isEarlyLeave = checkIsEarlyLeave(dateKey, checkOut);
 
     // Priority: LATE_AND_EARLY (Purple) > LATE (Red) > EARLY_LEAVE (Yellow) > ON_TIME (Green)
@@ -272,9 +279,10 @@ export function computeLateMinutes(dateKey, checkInAt) {
  * @param {Date} checkInAt - Check-in timestamp
  * @param {Date} checkOutAt - Check-out timestamp
  * @param {boolean} otApproved - Whether OT is approved (default: false)
+ * @param {'CONTINUOUS'|'SEPARATED'} otMode - Approved OT mode
  * @returns {number} Work minutes (excluding lunch)
  */
-export function computeWorkMinutes(dateKey, checkInAt, checkOutAt, otApproved = false) {
+export function computeWorkMinutes(dateKey, checkInAt, checkOutAt, otApproved = false, otMode = 'CONTINUOUS') {
   // P2 Fix (Bug #6): Guard against Invalid Date to prevent NaN in calculations
   if (!(checkInAt instanceof Date) || isNaN(checkInAt.getTime()) ||
       !(checkOutAt instanceof Date) || isNaN(checkOutAt.getTime())) {
@@ -288,8 +296,11 @@ export function computeWorkMinutes(dateKey, checkInAt, checkOutAt, otApproved = 
 
   let effectiveCheckOut = checkOutAt;
   
-  // STRICT (A1): If no OT approval, cap checkout at 17:30
-  if (!otApproved) {
+  const normalizedMode = otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
+
+  // Separated OT always caps base shift at 17:30.
+  // Continuous OT keeps legacy behavior: cap only when otApproved is false.
+  if (normalizedMode === 'SEPARATED' || !otApproved) {
     const endOfShift = createTimeInGMT7(dateKey, 17, 30);
     if (checkOutAt > endOfShift) {
       effectiveCheckOut = endOfShift;  // Cap at end of shift
@@ -324,12 +335,29 @@ export function computeWorkMinutes(dateKey, checkInAt, checkOutAt, otApproved = 
  * @param {string} dateKey - Date in "YYYY-MM-DD" format
  * @param {Date} checkOutAt - Check-out timestamp
  * @param {boolean} otApproved - Whether OT is approved (default: false)
+ * @param {'CONTINUOUS'|'SEPARATED'} otMode - Approved OT mode
+ * @param {number|null} separatedOtMinutes - Snapshot minutes for separated OT
  * @returns {number} OT minutes after 17:31
  */
-export function computeOtMinutes(dateKey, checkOutAt, otApproved = false) {
+export function computeOtMinutes(
+  dateKey,
+  checkOutAt,
+  otApproved = false,
+  otMode = 'CONTINUOUS',
+  separatedOtMinutes = 0
+) {
   // STRICT: Only calculate OT if approved
   if (!otApproved) {
     return 0;
+  }
+
+  if (otMode === 'SEPARATED') {
+    // checkOutAt is intentionally not used in separated mode:
+    // OT minutes come from approved snapshot stored on attendance.
+    if (!Number.isFinite(Number(separatedOtMinutes))) {
+      return 0;
+    }
+    return Math.max(0, Math.floor(Number(separatedOtMinutes)));
   }
   
   // P2 Fix (Bug #5): Guard against Invalid Date to prevent NaN/unpredictable comparison
