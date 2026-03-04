@@ -256,3 +256,61 @@ export function getOtDuration(dateKey, estimatedEndTime) {
   const otThreshold = createTimeInGMT7(dateKey, 17, 31);
   return getMinutesDiff(otThreshold, estimatedEndTime);
 }
+
+/**
+ * Calculate separated OT duration in minutes.
+ *
+ * @param {Date} startTime
+ * @param {Date} endTime
+ * @returns {number}
+ */
+export function getSeparatedOtDuration(startTime, endTime) {
+  if (!(startTime instanceof Date) || isNaN(startTime.getTime())) {
+    return 0;
+  }
+  if (!(endTime instanceof Date) || isNaN(endTime.getTime())) {
+    return 0;
+  }
+  if (endTime <= startTime) {
+    return 0;
+  }
+  return getMinutesDiff(startTime, endTime);
+}
+
+/**
+ * Build OT preview payload for UI rendering.
+ *
+ * @param {string} dateKey
+ * @param {'CONTINUOUS'|'SEPARATED'|null|undefined} otMode
+ * @param {Date|null} otStartTime
+ * @param {Date|null} estimatedEndTime
+ * @returns {{mode: 'CONTINUOUS'|'SEPARATED', startTime: Date|null, endTime: Date|null, minutes: number}}
+ */
+export function buildOtPreview(dateKey, otMode, otStartTime, estimatedEndTime) {
+  const mode = otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
+  const endTime = (estimatedEndTime instanceof Date && !isNaN(estimatedEndTime.getTime()))
+    ? estimatedEndTime
+    : null;
+
+  const continuousStart = (
+    dateKey &&
+    typeof dateKey === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+  ) ? createTimeInGMT7(dateKey, 17, 31) : null;
+
+  const separatedStart = (otStartTime instanceof Date && !isNaN(otStartTime.getTime()))
+    ? otStartTime
+    : null;
+
+  const startTime = mode === 'SEPARATED' ? separatedStart : continuousStart;
+  const minutes = (startTime && endTime && endTime > startTime)
+    ? getMinutesDiff(startTime, endTime)
+    : 0;
+
+  return {
+    mode,
+    startTime,
+    endTime,
+    minutes
+  };
+}
