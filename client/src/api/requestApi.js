@@ -74,6 +74,20 @@ export const getPendingRequests = (params = {}, config = {}) =>
     client.get('/requests/pending', { ...config, params });
 
 /**
+ * Get approval history with pagination (RBAC-aware).
+ * - MANAGER: Requests from users in the same team
+ * - ADMIN: All approved/rejected requests company-wide
+ * @param {Object} [params={}] - Query parameters
+ * @param {number} [params.page=1] - Page number (min: 1)
+ * @param {number} [params.limit=20] - Items per page (max: 100)
+ * @param {string} [params.status] - Filter by status (APPROVED | REJECTED)
+ * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @returns {Promise} { items: Array, pagination: { page, limit, total, totalPages } }
+ */
+export const getApprovalHistory = (params = {}, config = {}) =>
+    client.get('/requests/history', { ...config, params });
+
+/**
  * Approve a pending request (RBAC-aware).
  * - MANAGER: Can approve requests from users in the same team only
  * - ADMIN: Can approve any request
@@ -89,11 +103,33 @@ export const approveRequest = (requestId, config = {}) =>
  * - MANAGER: Can reject requests from users in the same team only
  * - ADMIN: Can reject any request
  * @param {string} requestId - Request's ObjectId
- * @param {Object} [config={}] - Axios config (e.g., { signal } for AbortController)
+ * @param {string|Object|null} [arg2] - rejectReason string OR legacy config object
+ * @param {Object} [arg3={}] - Axios config for new signature
  * @returns {Promise} { request: Object }
  */
-export const rejectRequest = (requestId, config = {}) =>
-    client.post(`/requests/${requestId}/reject`, {}, config);
+export const rejectRequest = (requestId, arg2, arg3 = {}) => {
+    const isPlainObject = (value) =>
+        Object.prototype.toString.call(value) === '[object Object]';
+
+    let rejectReason = null;
+    let config = {};
+
+    // New style: rejectRequest(id, 'reason', config)
+    if (typeof arg2 === 'string' || arg2 == null) {
+        rejectReason = arg2 ?? null;
+        config = isPlainObject(arg3) ? arg3 : {};
+    }
+    // Legacy style: rejectRequest(id, config)
+    else if (isPlainObject(arg2)) {
+        config = arg2;
+    }
+
+    const body = typeof rejectReason === 'string' && rejectReason.trim().length > 0
+        ? { rejectReason }
+        : {};
+
+    return client.post(`/requests/${requestId}/reject`, body, config);
+};
 
 /**
  * Cancel an OT request (DELETE).
