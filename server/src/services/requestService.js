@@ -2,7 +2,13 @@ import mongoose from 'mongoose';
 import Request from '../models/Request.js';
 import User from '../models/User.js';
 import Attendance from '../models/Attendance.js';
-import { getDateKey, isWeekend } from '../utils/dateUtils.js';
+import {
+  buildOtPreview,
+  getDateKey,
+  getSeparatedOtDuration,
+  isInOtPeriod,
+  isWeekend
+} from '../utils/dateUtils.js';
 import { getHolidayDatesForMonth } from '../utils/holidayUtils.js';
 import {
   getCheckoutGraceMs, getCheckoutGraceHours,
@@ -85,7 +91,7 @@ export const getMyRequests = async (userId, options = {}) => {
     .limit(limit)
     .lean();
 
-  return items;
+  return items.map(attachOtPreview);
 };
 
 /**
@@ -160,6 +166,21 @@ const buildPendingFilter = async (user) => {
   return filter;
 };
 
+const attachOtPreview = (requestDoc) => {
+  if (!requestDoc || requestDoc.type !== 'OT_REQUEST') {
+    return requestDoc;
+  }
+
+  const dateKey = requestDoc.date || requestDoc.checkInDate || null;
+  requestDoc.otPreview = buildOtPreview(
+    dateKey,
+    requestDoc.otMode,
+    requestDoc.otStartTime || null,
+    requestDoc.estimatedEndTime || null
+  );
+  return requestDoc;
+};
+
 /**
  * Count pending requests with RBAC scope enforcement.
  * Used for pagination total count.
@@ -196,7 +217,7 @@ export const getPendingRequests = async (user, options = {}) => {
   // Enrich OT requests with real attendance check-in/check-out from Attendance collection.
   const otRequests = requests.filter((req) => req?.type === 'OT_REQUEST');
   if (otRequests.length === 0) {
-    return requests;
+    return requests.map(attachOtPreview);
   }
 
   const seen = new Set();
@@ -228,7 +249,7 @@ export const getPendingRequests = async (user, options = {}) => {
         otReq.attendance = null;
       }
     }
-    return requests;
+    return requests.map(attachOtPreview);
   }
 
   const attendances = await Attendance.find({ $or: lookupPairs })
@@ -262,7 +283,7 @@ export const getPendingRequests = async (user, options = {}) => {
     otReq.attendance = attendanceMap.get(mapKey) || null;
   }
 
-  return requests;
+  return requests.map(attachOtPreview);
 };
 
 const autoRejectWithSystemReason = async (requestId, approverId, systemRejectReason, session = null) => {
@@ -350,23 +371,113 @@ async function approveRequestCore(requestId, approver, session) {
     }
   }
 
-  // OT_REQUEST invariant: request must be submitted/extended before actual checkout.
+  // OT_REQUEST invariant / re-validation.
   if (existingRequest.type === 'OT_REQUEST') {
+    const otMode = existingRequest.otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
     const attendanceQuery = Attendance.findOne({
       userId: existingRequest.userId._id,
       date: existingRequest.date
-    }).select('checkOutAt otApproved').lean();
+    }).select('checkInAt checkOutAt otApproved').lean();
     const attendance = session ? await attendanceQuery.session(session) : await attendanceQuery;
 
-    // Allow approval when there is no attendance yet (future/pre-checkin)
-    // or attendance exists but checkout has not happened.
-    if (attendance?.checkOutAt) {
-      const requestEffectiveTime = new Date(existingRequest.updatedAt || existingRequest.createdAt);
-      const checkoutTime = new Date(attendance.checkOutAt);
-      if (requestEffectiveTime > checkoutTime) {
-        const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+    if (otMode === 'CONTINUOUS') {
+      // Legacy invariant: request must be submitted/updated before checkout.
+      // Allow approval when there is no attendance yet (future/pre-checkin)
+      // or attendance exists but checkout has not happened.
+      if (attendance?.checkOutAt) {
+        const requestEffectiveTime = new Date(existingRequest.updatedAt || existingRequest.createdAt);
+        const checkoutTime = new Date(attendance.checkOutAt);
+        if (requestEffectiveTime > checkoutTime) {
+          const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+          error.statusCode = 400;
+          throw error;
+        }
+      }
+    } else {
+      // C2: SEPARATED re-validation at approval time.
+      if (!attendance?.checkInAt || !attendance?.checkOutAt) {
+        const error = new Error('Cannot approve separated OT: main shift attendance is incomplete');
         error.statusCode = 400;
         throw error;
+      }
+
+      if (!existingRequest.otStartTime || !existingRequest.estimatedEndTime) {
+        const error = new Error('Cannot approve separated OT: missing otStartTime or estimatedEndTime');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const otStartTime = new Date(existingRequest.otStartTime);
+      const estimatedEndTime = new Date(existingRequest.estimatedEndTime);
+      if (isNaN(otStartTime.getTime()) || isNaN(estimatedEndTime.getTime())) {
+        const error = new Error('Cannot approve separated OT: invalid OT time range');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (!isInOtPeriod(existingRequest.date, otStartTime)) {
+        const error = new Error('Cannot approve separated OT: otStartTime must be after 17:31 (GMT+7)');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (otStartTime <= new Date(attendance.checkOutAt)) {
+        const error = new Error('Cannot approve separated OT: otStartTime must be after shift check-out');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (estimatedEndTime <= otStartTime) {
+        const error = new Error('Cannot approve separated OT: estimatedEndTime must be after otStartTime');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const separatedMinutes = getSeparatedOtDuration(otStartTime, estimatedEndTime);
+      if (separatedMinutes < 30) {
+        const error = new Error('Cannot approve separated OT: minimum duration is 30 minutes');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const nextDateKey = (() => {
+        const [year, month, day] = existingRequest.date.split('-').map(Number);
+        const nextDate = new Date(Date.UTC(year, month - 1, day + 1, 12, 0, 0));
+        return nextDate.toISOString().slice(0, 10);
+      })();
+      const endDateKey = getDateKey(estimatedEndTime);
+      if (endDateKey === nextDateKey) {
+        const endHourMinute = new Date(estimatedEndTime.getTime() + (7 * 60 * 60 * 1000));
+        const endTotalMinutes = endHourMinute.getUTCHours() * 60 + endHourMinute.getUTCMinutes();
+        if (endTotalMinutes >= 8 * 60) {
+          const error = new Error('Cannot approve separated OT: next-day end time must be before 08:00 (GMT+7)');
+          error.statusCode = 400;
+          throw error;
+        }
+      }
+
+      const startDateKey = getDateKey(otStartTime);
+      if (startDateKey !== existingRequest.date && startDateKey !== nextDateKey) {
+        const error = new Error('Cannot approve separated OT: otStartTime must be on request date or immediate next day');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const endDateAllowed = endDateKey === existingRequest.date || endDateKey === nextDateKey;
+      if (!endDateAllowed) {
+        const error = new Error('Cannot approve separated OT: estimatedEndTime must be on request date or immediate next day');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      if (startDateKey === nextDateKey) {
+        const startHourMinute = new Date(otStartTime.getTime() + (7 * 60 * 60 * 1000));
+        const startTotalMinutes = startHourMinute.getUTCHours() * 60 + startHourMinute.getUTCMinutes();
+        if (startTotalMinutes >= 8 * 60) {
+          const error = new Error('Cannot approve separated OT: next-day start time must be before 08:00 (GMT+7)');
+          error.statusCode = 400;
+          throw error;
+        }
       }
     }
   }
@@ -514,17 +625,22 @@ async function approveRequestCore(requestId, approver, session) {
   }
 
   // STEP 4: Atomic update Request status
+  const approvalSet = {
+    status: 'APPROVED',
+    approvedBy: approver._id,
+    approvedAt: new Date()
+  };
+  if (existingRequest.type === 'OT_REQUEST') {
+    approvalSet.isOtSlotActive = true;
+  }
+
   const updateQuery = Request.findOneAndUpdate(
     {
       _id: requestId,
       status: 'PENDING'
     },
     {
-      $set: {
-        status: 'APPROVED',
-        approvedBy: approver._id,
-        approvedAt: new Date()
-      }
+      $set: approvalSet
     },
     { new: true }
   ).populate('userId', 'teamId');
@@ -550,15 +666,24 @@ async function approveRequestCore(requestId, approver, session) {
 
   // STEP 5: Type-specific post-approval updates
   
-  // OT_REQUEST: Set otApproved flag
+  // OT_REQUEST: Set mode-aware OT snapshot on attendance
   if (updatedRequest.type === 'OT_REQUEST') {
+    const otMode = updatedRequest.otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
+    const separatedOtMinutes = otMode === 'SEPARATED'
+      ? getSeparatedOtDuration(new Date(updatedRequest.otStartTime), new Date(updatedRequest.estimatedEndTime))
+      : null;
+
     const otQuery = Attendance.findOneAndUpdate(
       { 
         userId: updatedRequest.userId._id,
         date: updatedRequest.date 
       },
       { 
-        $set: { otApproved: true } 
+        $set: {
+          otApproved: true,
+          otMode,
+          separatedOtMinutes
+        }
       },
       { upsert: false }
     );
@@ -697,17 +822,22 @@ async function rejectRequestCore(requestId, rejector, session) {
   }
 
   // STEP 3: Atomic update
+  const setFields = {
+    status: 'REJECTED',
+    approvedBy: rejector._id,
+    approvedAt: new Date()
+  };
+  if (existingRequest.type === 'OT_REQUEST') {
+    setFields.isOtSlotActive = false;
+  }
+
   const updateQuery = Request.findOneAndUpdate(
     {
       _id: requestId,
       status: 'PENDING'
     },
     {
-      $set: {
-        status: 'REJECTED',
-        approvedBy: rejector._id,
-        approvedAt: new Date()
-      }
+      $set: setFields
     },
     { new: true }
   ).populate('userId', 'name employeeCode email teamId');
@@ -857,20 +987,30 @@ async function updateAttendanceFromRequest(request, session = null, options = {}
     updateFields.needsReconciliation = false;
   }
 
-  // Phase 2.1 (OT_REQUEST): Reconcile OT approval when creating/updating attendance via ADJUST_TIME
-  // Handle case: OT approved BEFORE attendance exists, then ADJUST_TIME creates attendance
-  // P1 Fix: Use $or to support legacy data (date vs checkInDate field)
-  const otQuery = Request.exists({
+  // Rehydrate OT approval snapshot when attendance is recreated/updated.
+  const otQuery = Request.findOne({
     userId: userObjectId,
     type: 'OT_REQUEST',
     status: 'APPROVED',
     $or: [{ date }, { checkInDate: date }]
-  });
+  })
+    .select('otMode otStartTime estimatedEndTime')
+    .sort({ approvedAt: -1, updatedAt: -1, createdAt: -1 })
+    .lean();
   
   const approvedOt = session ? await otQuery.session(session) : await otQuery;
 
   if (approvedOt) {
     updateFields.otApproved = true;
+    const approvedOtMode = approvedOt.otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
+    updateFields.otMode = approvedOtMode;
+    updateFields.separatedOtMinutes = approvedOtMode === 'SEPARATED'
+      ? getSeparatedOtDuration(new Date(approvedOt.otStartTime), new Date(approvedOt.estimatedEndTime))
+      : null;
+  } else {
+    updateFields.otApproved = false;
+    updateFields.otMode = null;
+    updateFields.separatedOtMinutes = null;
   }
 
   // Defensive check: cannot create new attendance without checkInAt
