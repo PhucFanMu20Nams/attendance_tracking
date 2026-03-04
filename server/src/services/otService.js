@@ -1,7 +1,13 @@
 import mongoose from 'mongoose';
-import Request from '../models/Request.js';
+import Request, { OT_MODES } from '../models/Request.js';
 import Attendance from '../models/Attendance.js';
-import { getDateKey, getTodayDateKey, isInOtPeriod, getOtDuration } from '../utils/dateUtils.js';
+import {
+  getDateKey,
+  getOtDuration,
+  getSeparatedOtDuration,
+  getTodayDateKey,
+  isInOtPeriod
+} from '../utils/dateUtils.js';
 import { toValidDate, assertHasTzIfString } from './requestDateValidation.js';
 
 const BUSINESS_TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -36,7 +42,14 @@ const getTimeKeyInGmt7 = (date) => {
  * @returns {Promise<Object>} Created or updated request
  */
 export const createOtRequest = async (userId, requestData) => {
-  const { date, estimatedEndTime, reason } = requestData;
+  const {
+    date,
+    estimatedEndTime,
+    reason,
+    otMode: rawOtMode = 'CONTINUOUS',
+    otStartTime
+  } = requestData;
+  const otMode = rawOtMode || 'CONTINUOUS';
 
   // Validation 0: userId must be valid ObjectId (defensive)
   if (!mongoose.Types.ObjectId.isValid(userId)) {
@@ -54,6 +67,9 @@ export const createOtRequest = async (userId, requestData) => {
 
   // Validation 0.6: estimatedEndTime timezone (if string)
   assertHasTzIfString(estimatedEndTime, 'estimatedEndTime');
+  if (otMode === 'SEPARATED') {
+    assertHasTzIfString(otStartTime, 'otStartTime');
+  }
 
   // Validation 0.6: Parse and validate estimatedEndTime (accept string or Date)
   const endTime = toValidDate(estimatedEndTime, 'estimatedEndTime');
@@ -62,6 +78,16 @@ export const createOtRequest = async (userId, requestData) => {
     error.statusCode = 400;
     throw error;
   }
+
+  if (!OT_MODES.includes(otMode)) {
+    const error = new Error('otMode must be CONTINUOUS or SEPARATED');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const startTime = otMode === 'SEPARATED'
+    ? toValidDate(otStartTime, 'otStartTime')
+    : null;
 
   // Validation 0.7: reason must not be empty (defensive)
   const trimmedReason = (reason ?? '').trim();
@@ -83,6 +109,13 @@ export const createOtRequest = async (userId, requestData) => {
   const todayKey = getTodayDateKey();
   if (date < todayKey) {
     const error = new Error('Cannot create OT request for past dates');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  // C1: separated OT only supports today's date.
+  if (otMode === 'SEPARATED' && date !== todayKey) {
+    const error = new Error('SEPARATED OT chỉ hỗ trợ cho ngày hiện tại (GMT+7)');
     error.statusCode = 400;
     throw error;
   }
@@ -127,31 +160,116 @@ export const createOtRequest = async (userId, requestData) => {
     }
   }
 
-  // Validation 3: same-day end time must be > 17:31 (OT period)
-  if (!isCrossMidnight && !isInOtPeriod(date, endTime)) {
-    const error = new Error('OT must start after 17:31. Please adjust your estimated end time.');
-    error.statusCode = 400;
-    throw error;
+  // Mode-specific validations before auto-extend/update.
+  const existingAttendance = await Attendance.findOne({ userId, date })
+    .select('checkInAt checkOutAt')
+    .lean();
+
+  if (otMode === 'CONTINUOUS') {
+    // Validation 3: same-day end time must be > 17:31 (OT period)
+    if (!isCrossMidnight && !isInOtPeriod(date, endTime)) {
+      const error = new Error('OT must start after 17:31. Please adjust your estimated end time.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Validation 4: Minimum 30 minutes OT (B1)
+    const estimatedOtMinutes = getOtDuration(date, endTime);
+    if (estimatedOtMinutes < 30) {
+      const error = new Error('Minimum OT duration is 30 minutes');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    // Legacy continuous rule: request must be before checkout.
+    if (existingAttendance?.checkOutAt) {
+      const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+      error.statusCode = 400;
+      throw error;
+    }
+  } else {
+    // SEPARATED validations
+    if (!startTime) {
+      const error = new Error('otStartTime is required for SEPARATED OT');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const startDateKey = getDateKey(startTime);
+    const startIsCrossMidnight = startDateKey === nextDateKey;
+    if (startDateKey !== date && !startIsCrossMidnight) {
+      const error = new Error('otStartTime must be on request date or the immediate next day');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (startIsCrossMidnight) {
+      const startTimeKey = getTimeKeyInGmt7(startTime);
+      if (startTimeKey >= OT_CROSS_MIDNIGHT_CUTOFF) {
+        const error = new Error('Cross-midnight OT start time must be from 00:00 to 07:59 (GMT+7)');
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    if (!isInOtPeriod(date, startTime)) {
+      const error = new Error('otStartTime must be after 17:31 (GMT+7)');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (endTime <= startTime) {
+      const error = new Error('estimatedEndTime must be after otStartTime');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const separatedMinutes = getSeparatedOtDuration(startTime, endTime);
+    if (separatedMinutes < 30) {
+      const error = new Error('Minimum OT duration is 30 minutes');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!existingAttendance?.checkInAt || !existingAttendance?.checkOutAt) {
+      const error = new Error('Phải hoàn tất ca chính (check-in + check-out) trước khi đăng ký OT tách rời');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (startTime <= new Date(existingAttendance.checkOutAt)) {
+      const error = new Error('otStartTime phải sau thời điểm check-out ca chính');
+      error.statusCode = 400;
+      throw error;
+    }
   }
 
-  // Validation 4: Minimum 30 minutes OT (B1)
-  const estimatedOtMinutes = getOtDuration(date, endTime);
-  if (estimatedOtMinutes < 30) {
-    const error = new Error('Minimum OT duration is 30 minutes');
-    error.statusCode = 400;
-    throw error;
+  // D2: Auto-extend - Check if PENDING request exists for same date.
+  const existingRequest = await Request.findOneAndUpdate(
+    {
+      userId,
+      type: 'OT_REQUEST',
+      status: 'PENDING',
+      $or: [{ date }, { checkInDate: date }]
+    },
+    {
+      $set: {
+        estimatedEndTime: endTime,
+        reason: trimmedReason,
+        otMode,
+        otStartTime: otMode === 'SEPARATED' ? startTime : null,
+        isOtSlotActive: true
+      }
+    },
+    { new: true }
+  );
+
+  if (existingRequest) {
+    // Auto-extend successful
+    return existingRequest;
   }
 
-  // Validation 5: Cannot create if already checked out (E2)
-  const existingAttendance = await Attendance.findOne({ userId, date });
-  if (existingAttendance?.checkOutAt) {
-    const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  // Validation 6: Max 31 pending per month (D1)
-  // Legacy compatibility: some older OT docs may still contain checkInDate.
+  // Max pending per month (D1)
   const month = date.substring(0, 7);
   const pendingCount = await Request.countDocuments({
     userId,
@@ -169,40 +287,31 @@ export const createOtRequest = async (userId, requestData) => {
     throw error;
   }
 
-  // TOCTOU mitigation: re-check checkout state immediately before mutating Request.
-  // This narrows (but cannot fully eliminate) the race window across collections.
-  const alreadyCheckedOut = await Attendance.exists({
-    userId,
-    date,
-    checkOutAt: { $ne: null }
-  });
-  if (alreadyCheckedOut) {
-    const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
-    error.statusCode = 400;
-    throw error;
+  if (otMode === 'CONTINUOUS') {
+    const alreadyCheckedOut = await Attendance.exists({
+      userId,
+      date,
+      checkOutAt: { $ne: null }
+    });
+    if (alreadyCheckedOut) {
+      const error = new Error('Cannot request OT after checkout. OT must be requested before checking out.');
+      error.statusCode = 400;
+      throw error;
+    }
   }
 
-  // D2: Auto-extend - Check if PENDING request exists for same date (ATOMIC FIX)
-  // Legacy compatibility: keep checkInDate branch for historical data reads.
-  const existingRequest = await Request.findOneAndUpdate(
-    {
-      userId,
-      type: 'OT_REQUEST',
-      status: 'PENDING',
-      $or: [{ date }, { checkInDate: date }]
-    },
-    {
-      $set: {
-        estimatedEndTime: endTime,
-        reason: trimmedReason
-      }
-    },
-    { new: true }
-  );
-
-  if (existingRequest) {
-    // Auto-extend successful
-    return existingRequest;
+  // Slot guard: block if approved active OT exists on same day.
+  const approvedSlot = await Request.exists({
+    userId,
+    type: 'OT_REQUEST',
+    status: 'APPROVED',
+    $or: [{ date }, { checkInDate: date }],
+    isOtSlotActive: true
+  });
+  if (approvedSlot) {
+    const error = new Error('Chỉ được có tối đa 1 phiên OT mỗi ngày');
+    error.statusCode = 409;
+    throw error;
   }
 
   // Create new OT request (no existing PENDING found)
@@ -212,6 +321,9 @@ export const createOtRequest = async (userId, requestData) => {
       type: 'OT_REQUEST',
       date,
       estimatedEndTime: endTime,
+      otMode,
+      otStartTime: otMode === 'SEPARATED' ? startTime : null,
+      isOtSlotActive: true,
       reason: trimmedReason,
       status: 'PENDING'
     });
@@ -220,7 +332,7 @@ export const createOtRequest = async (userId, requestData) => {
   } catch (err) {
     // Handle MongoDB duplicate key error (should not happen due to findOneAndUpdate above)
     if (err?.code === 11000) {
-      const error = new Error('Duplicate OT request detected. Please try again.');
+      const error = new Error('Chỉ được có tối đa 1 phiên OT mỗi ngày');
       error.statusCode = 409;
       throw error;
     }
