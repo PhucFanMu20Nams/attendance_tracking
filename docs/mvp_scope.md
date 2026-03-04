@@ -1,4 +1,4 @@
-# MVP Scope — Attendance Web App (MERN) (v2.7)
+# MVP Scope — Attendance Web App (MERN) (v2.8)
 
 ## Goal
 Build a simple internal attendance MVP for an SME. Beginner-friendly but correct logic and extensible.
@@ -35,6 +35,25 @@ Build a simple internal attendance MVP for an SME. Beginner-friendly but correct
   - Manager: team scope
   - Admin: team scope or company scope
 - Cells show computed status + color key
+
+### Dashboard Cross-Midnight Approved OT Checkout (NEW v2.8)
+
+**Context:** When a user has an open session from the previous day AND that session has `otApproved=true`, the Dashboard on the next day must display a **Check-out** button instead of Check-in.
+
+**Implementation (Option 1A + 2A):**
+- **Data Source (1A):** Uses existing `GET /attendance/open-session` endpoint. Validates `otApproved` via `GET /attendance/me` for the open session's date. If month boundary is crossed, fetches the additional month.
+- **Post-Checkout State (2A):** After successful cross-midnight checkout, the main status resets to `Chưa check-in` for the new day. A success feedback alert displays: `Đã check-out ca OT ngày trước`.
+- No backend/API/schema changes required.
+
+**Key Logic:**
+- `effectiveAttendance`: Derived state that either points to today's attendance (normal flow) or the previous day's open session (cross-midnight approved OT).
+- `attendanceSource`: Flag (`CROSS_MIDNIGHT_APPROVED_OT` | normal) to drive conditional UI and success messaging.
+- Fail-safe: If `open-session` or cross-month fetch fails, falls back to existing behavior silently.
+
+**Scope Exclusions:**
+- OT not approved (`otApproved=false`): No change — behaves as before.
+- No retroactive OT approval via Dashboard.
+- No backend rule changes for check-in/check-out.
 
 ### 6) Monthly Report + Excel Export (ENHANCED v2.7)
 
@@ -312,4 +331,5 @@ New fields added to Attendance model (v2.7):
 - Excel export works
 - Member Management pages work with correct RBAC:
   - Admin company/team, Manager team-only
+- Dashboard shows Check-out for cross-midnight approved OT sessions (v2.8)
 - Manual tests pass
