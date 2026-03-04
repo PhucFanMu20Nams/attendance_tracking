@@ -1,9 +1,10 @@
-# Data Dictionary — MongoDB Collections (v2.7)
+# Data Dictionary — MongoDB Collections (v2.8)
 
 v2.3 adds soft delete, leave requests, and pagination support.
 v2.5 adds Today Activity pagination.
 v2.6 adds OT Request approval system (OT_REQUEST type), audit logging, and cross-midnight ADJUST_TIME support.
 v2.7 adds auto-close scheduler, FORGOT_CHECKOUT workflow, and attendance reconciliation fields.
+v2.8 Dashboard cross-midnight approved OT checkout UI (frontend-only, no schema changes).
 
 ## 1) users
 Purpose: accounts + roles + team assignment.
