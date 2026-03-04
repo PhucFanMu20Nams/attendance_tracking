@@ -104,7 +104,7 @@ async function buildTimesheetMatrix(users, month, holidayDates) {
         userId: { $in: userIds },
         date: { $gte: monthStart, $lte: monthEnd }
     })
-        .select('userId date checkInAt checkOutAt otApproved')
+        .select('userId date checkInAt checkOutAt otApproved otMode separatedOtMinutes')
         .lean();
 
     // Group attendance by "userId_date" for O(1) lookup
@@ -220,7 +220,9 @@ function computeCellStatus(dateKey, attendance, holidayDates, leaveDates, todayD
             date: dateKey,
             checkInAt: attendance.checkInAt,
             checkOutAt: attendance.checkOutAt,
-            otApproved: !!attendance.otApproved
+            otApproved: !!attendance.otApproved,
+            otMode: attendance.otMode,
+            separatedOtMinutes: attendance.separatedOtMinutes
         },
         holidayDates,
         leaveDates  // Phase 3: Pass leaveDates
