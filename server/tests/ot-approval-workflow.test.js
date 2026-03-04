@@ -126,6 +126,25 @@ describe('OT Approval Workflow Integration', () => {
       .send({ type: 'OT_REQUEST', date, estimatedEndTime: endTime, reason });
   }
 
+  async function createSeparatedOtReq(
+    date = TODAY,
+    startTime = `${TODAY}T19:00:00+07:00`,
+    endTime = `${TODAY}T21:00:00+07:00`,
+    reason = 'Separated test'
+  ) {
+    return request(app)
+      .post('/api/requests')
+      .set('Authorization', `Bearer ${employeeToken}`)
+      .send({
+        type: 'OT_REQUEST',
+        date,
+        otMode: 'SEPARATED',
+        otStartTime: startTime,
+        estimatedEndTime: endTime,
+        reason
+      });
+  }
+
   async function checkIn(token = employeeToken) {
     return request(app)
       .post('/api/attendance/check-in')
@@ -178,6 +197,69 @@ describe('OT Approval Workflow Integration', () => {
       const finalAtt = await Attendance.findOne({ userId: employeeId, date: TODAY }).lean();
       expect(finalAtt.otApproved).toBe(true);
       expect(finalAtt.checkOutAt).toBeDefined();
+    });
+  });
+
+  describe('Separated OT after checkout > 17:30', () => {
+    it('should allow creating separated OT when main-shift checkout is 17:32', async () => {
+      // Check in at 08:00 GMT+7.
+      vi.setSystemTime(new Date('2026-02-10T01:00:00.000Z'));
+      const ciRes = await checkIn();
+      expect(ciRes.status).toBe(200);
+
+      // Check out at 17:32 GMT+7.
+      vi.setSystemTime(new Date('2026-02-10T10:32:00.000Z'));
+      const coRes = await checkOut();
+      expect(coRes.status).toBe(200);
+
+      // Create separated OT 19:00 -> 21:00 on same day.
+      vi.setSystemTime(new Date('2026-02-10T10:35:00.000Z'));
+      const createRes = await createSeparatedOtReq(
+        TODAY,
+        `${TODAY}T19:00:00+07:00`,
+        `${TODAY}T21:00:00+07:00`,
+        'Separated OT after 17:32 checkout'
+      );
+
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.request.otMode).toBe('SEPARATED');
+      expect(createRes.body.request.status).toBe('PENDING');
+    });
+
+    it('should allow approving separated OT when main-shift checkout is 17:32', async () => {
+      // Check in at 08:00 GMT+7.
+      vi.setSystemTime(new Date('2026-02-10T01:00:00.000Z'));
+      const ciRes = await checkIn();
+      expect(ciRes.status).toBe(200);
+
+      // Check out at 17:32 GMT+7.
+      vi.setSystemTime(new Date('2026-02-10T10:32:00.000Z'));
+      const coRes = await checkOut();
+      expect(coRes.status).toBe(200);
+
+      // Create separated OT request.
+      vi.setSystemTime(new Date('2026-02-10T10:35:00.000Z'));
+      const createRes = await createSeparatedOtReq(
+        TODAY,
+        `${TODAY}T19:00:00+07:00`,
+        `${TODAY}T21:00:00+07:00`,
+        'Separated OT approval after 17:32 checkout'
+      );
+      expect(createRes.status).toBe(201);
+
+      // Manager approves.
+      const requestId = createRes.body.request._id;
+      const approveRes = await request(app)
+        .post(`/api/requests/${requestId}/approve`)
+        .set('Authorization', `Bearer ${managerToken}`);
+
+      expect(approveRes.status).toBe(200);
+      expect(approveRes.body.request.status).toBe('APPROVED');
+
+      const attendance = await Attendance.findOne({ userId: employeeId, date: TODAY }).lean();
+      expect(attendance.otApproved).toBe(true);
+      expect(attendance.otMode).toBe('SEPARATED');
+      expect(attendance.separatedOtMinutes).toBe(120);
     });
   });
 
