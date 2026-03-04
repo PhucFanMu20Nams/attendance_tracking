@@ -108,18 +108,29 @@ export const checkIn = async (userId) => {
   // Phase 2.1 (OT_REQUEST): Auto-apply approved OT if exists
   // Handles case where OT request was approved BEFORE check-in
   // P1 Fix: Use $or to support legacy data (date vs checkInDate field)
-  const approvedOt = await Request.exists({
+  const approvedOt = await Request.findOne({
     userId,
     type: 'OT_REQUEST',
     status: 'APPROVED',
     $or: [{ date: dateKey }, { checkInDate: dateKey }]
-  });
+  })
+    .select('otMode otStartTime estimatedEndTime')
+    .sort({ approvedAt: -1, updatedAt: -1, createdAt: -1 })
+    .lean();
 
-  if (approvedOt) {
-    // Set otApproved flag on attendance we just created
+  const approvedOtMode = approvedOt?.otMode === 'SEPARATED' ? 'SEPARATED' : 'CONTINUOUS';
+
+  // Auto-apply only continuous OT at check-in path.
+  if (approvedOt && approvedOtMode === 'CONTINUOUS') {
     attendance = await Attendance.findByIdAndUpdate(
       attendance._id,
-      { $set: { otApproved: true } },
+      {
+        $set: {
+          otApproved: true,
+          otMode: 'CONTINUOUS',
+          separatedOtMinutes: null
+        }
+      },
       { new: true }
     );
   }
@@ -129,7 +140,9 @@ export const checkIn = async (userId) => {
     date: attendance.date,
     checkInAt: attendance.checkInAt,
     checkOutAt: attendance.checkOutAt,
-    otApproved: !!attendance.otApproved
+    otApproved: !!attendance.otApproved,
+    otMode: attendance.otMode || null,
+    separatedOtMinutes: attendance.separatedOtMinutes ?? null
   };
 };
 
@@ -272,7 +285,7 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
     userId,
     date: { $regex: `^${month}` }
   })
-  .select('date checkInAt checkOutAt otApproved')
+  .select('date checkInAt checkOutAt otApproved otMode separatedOtMinutes')
   .lean();
 
   // Build attendance lookup map for O(1) access
@@ -285,7 +298,9 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
       date: dateKey,
       checkInAt: null,
       checkOutAt: null,
-      otApproved: false
+      otApproved: false,
+      otMode: null,
+      separatedOtMinutes: null
     };
 
     // Compute status for this day (handles LEAVE, ABSENT, WEEKEND_OR_HOLIDAY, etc.)
@@ -294,7 +309,9 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
         date: record.date,
         checkInAt: record.checkInAt,
         checkOutAt: record.checkOutAt,
-        otApproved: record.otApproved
+        otApproved: record.otApproved,
+        otMode: record.otMode,
+        separatedOtMinutes: record.separatedOtMinutes
       },
       holidayDates,
       leaveDates
@@ -308,7 +325,9 @@ export const getMonthlyHistory = async (userId, month, holidayDates = new Set(),
       lateMinutes: computed.lateMinutes,
       workMinutes: computed.workMinutes,
       otMinutes: computed.otMinutes,
-      otApproved: !!record.otApproved
+      otApproved: !!record.otApproved,
+      otMode: record.otMode || null,
+      separatedOtMinutes: record.separatedOtMinutes ?? null
     };
   });
 };
@@ -386,7 +405,7 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
     userId: { $in: userIds },
     date: todayKey
   })
-    .select('userId date checkInAt checkOutAt otApproved')
+    .select('userId date checkInAt checkOutAt otApproved otMode separatedOtMinutes')
     .lean();
 
   // Step 3: Map attendance to user in memory
@@ -418,7 +437,9 @@ export const getTodayActivity = async (scope, teamId, holidayDates = new Set(), 
           date: todayKey, 
           checkInAt: attendance.checkInAt, 
           checkOutAt: attendance.checkOutAt,
-          otApproved: attendance.otApproved 
+          otApproved: attendance.otApproved,
+          otMode: attendance.otMode,
+          separatedOtMinutes: attendance.separatedOtMinutes
         },
         holidayDates,
         new Set()  // Phase 3: Pass empty leaveDates (today view doesn't show LEAVE)
