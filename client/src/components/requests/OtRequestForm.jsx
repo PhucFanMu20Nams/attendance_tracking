@@ -7,6 +7,7 @@ import {
     Spinner,
     Alert,
     Modal,
+    Select,
 } from 'flowbite-react';
 import { HiPlus } from 'react-icons/hi';
 import { createRequest } from '../../api/requestApi';
@@ -17,26 +18,34 @@ import {
 } from '../../utils/dateDisplay';
 
 const OT_CROSS_MIDNIGHT_CUTOFF = '08:00';
+const OT_MODE_CONTINUOUS = 'CONTINUOUS';
+const OT_MODE_SEPARATED = 'SEPARATED';
 
-const isCrossMidnightOt = (estimatedEndTime) =>
-    Boolean(estimatedEndTime) && estimatedEndTime < OT_CROSS_MIDNIGHT_CUTOFF;
+const isCrossMidnightOt = (timeValue) =>
+    Boolean(timeValue) && timeValue < OT_CROSS_MIDNIGHT_CUTOFF;
 
-const resolveOtEndDate = (date, estimatedEndTime) => {
-    if (!date || !estimatedEndTime) return null;
-    if (!isCrossMidnightOt(estimatedEndTime)) return date;
+const resolveOtDate = (date, timeValue) => {
+    if (!date || !timeValue) return null;
+    if (!isCrossMidnightOt(timeValue)) return date;
     return addDaysToDate(date, 1);
+};
+
+const parseVnDateTime = (date, timeValue) => {
+    if (!date || !timeValue) return null;
+    const parsed = new Date(`${date}T${timeValue}:00+07:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const formatMinutes = (minutes) => {
+    if (!Number.isFinite(minutes) || minutes <= 0) return '0 phút';
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (hours <= 0) return `${mins} phút`;
+    return `${hours} giờ ${mins} phút`;
 };
 
 /**
  * Form for creating OT_REQUEST requests, including confirm modal flow.
- * Extracted from CreateRequestForm.jsx (Option B wrapper pattern).
- *
- * @param {Object} props
- * @param {Object} props.formData - Canonical wrapper draft state
- * @param {Function} props.onFieldChange - Update wrapper draft field
- * @param {Function} props.onSuccess - Called after successful creation
- * @param {Function} props.setFormError - Set error message on parent
- * @param {Function} props.setFormSuccess - Set success message on parent
  */
 export default function OtRequestForm({
     formData,
@@ -45,95 +54,170 @@ export default function OtRequestForm({
     setFormError,
     setFormSuccess,
 }) {
-    // Get today in GMT+7 for default date
     const today = new Date().toLocaleDateString('sv-SE', {
         timeZone: 'Asia/Ho_Chi_Minh',
     });
 
     const [submitting, setSubmitting] = useState(false);
-    // OT modal state
     const [showOtConfirmModal, setShowOtConfirmModal] = useState(false);
     const [estimatedOtMinutes, setEstimatedOtMinutes] = useState(0);
-    // Local modal-level error (not propagated to wrapper)
     const [modalError, setModalError] = useState('');
+
+    const otMode = formData.otMode || OT_MODE_CONTINUOUS;
 
     const handleInputChange = (e) => {
         const { name, value } = e.target;
+
+        if (name === 'otMode') {
+            onFieldChange('otMode', value);
+            if (value === OT_MODE_CONTINUOUS) {
+                onFieldChange('otStartTime', '');
+            }
+            return;
+        }
+
         onFieldChange(name, value);
     };
 
-    /**
-     * Validate OT request business rules.
-     * REUSES buildIsoTimestamp helper.
-     */
-    const validateOtRequest = () => {
-        const { date, estimatedEndTime, reason } = formData;
+    const getPreviewRange = () => {
+        const { date, estimatedEndTime, otStartTime } = formData;
+        if (!date || !estimatedEndTime) {
+            return { start: null, end: null, minutes: 0, endDate: null, startDate: null };
+        }
 
-        // Required fields
+        const endDate = resolveOtDate(date, estimatedEndTime);
+        const end = parseVnDateTime(endDate, estimatedEndTime);
+        if (!end) {
+            return { start: null, end: null, minutes: 0, endDate, startDate: null };
+        }
+
+        if (otMode === OT_MODE_SEPARATED) {
+            if (!otStartTime) {
+                return { start: null, end, minutes: 0, endDate, startDate: null };
+            }
+            const startDate = resolveOtDate(date, otStartTime);
+            const start = parseVnDateTime(startDate, otStartTime);
+            if (!start) {
+                return { start: null, end, minutes: 0, endDate, startDate };
+            }
+            const minutes = Math.floor((end - start) / 60000);
+            return {
+                start,
+                end,
+                minutes: Number.isFinite(minutes) ? minutes : 0,
+                endDate,
+                startDate,
+            };
+        }
+
+        const start = parseVnDateTime(date, '17:31');
+        const minutes = Math.floor((end - start) / 60000);
+        return {
+            start,
+            end,
+            minutes: Number.isFinite(minutes) ? minutes : 0,
+            endDate,
+            startDate: date,
+        };
+    };
+
+    const validateOtRequest = () => {
+        const { date, estimatedEndTime, reason, otStartTime } = formData;
+
         if (!date) return { valid: false, error: 'Vui lòng chọn ngày làm OT' };
-        if (!estimatedEndTime) return { valid: false, error: 'Vui lòng nhập giờ về dự kiến' };
+        if (!estimatedEndTime) return { valid: false, error: 'Vui lòng nhập giờ kết thúc OT' };
         if (!reason?.trim()) return { valid: false, error: 'Vui lòng nhập lý do' };
 
-        // E1: No retroactive (date check)
         const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
         if (date < todayStr) {
             return { valid: false, error: 'Không thể đăng ký OT cho ngày trong quá khứ' };
         }
 
-        // E1.5: Same-day retroactive time check (CRITICAL - matches backend validation)
-        if (date === todayStr) {
-            const now = new Date();
-            const targetDate = resolveOtEndDate(date, estimatedEndTime);
-            if (!targetDate) {
-                return { valid: false, error: 'Ngày hoặc giờ không hợp lệ' };
-            }
-            const estimatedTime = new Date(`${targetDate}T${estimatedEndTime}:00+07:00`);
-            if (isNaN(estimatedTime.getTime())) {
-                return { valid: false, error: 'Ngày hoặc giờ không hợp lệ' };
-            }
-
-            if (estimatedTime <= now) {
-                return {
-                    valid: false,
-                    error: 'Giờ về dự kiến phải sau thời điểm hiện tại. Không thể đăng ký OT đã qua.',
-                };
-            }
+        if (![OT_MODE_CONTINUOUS, OT_MODE_SEPARATED].includes(otMode)) {
+            return { valid: false, error: 'Loại OT không hợp lệ' };
         }
 
-        // D1: Must be after 17:31
-        const isCrossDay = isCrossMidnightOt(estimatedEndTime);
-        if (!isCrossDay && estimatedEndTime <= '17:31') {
-            return { valid: false, error: 'Giờ về phải sau 17:31 (hết giờ làm việc)' };
+        const endDate = resolveOtDate(date, estimatedEndTime);
+        const endTime = parseVnDateTime(endDate, estimatedEndTime);
+        if (!endTime) {
+            return { valid: false, error: 'Giờ kết thúc OT không hợp lệ' };
         }
 
-        // D1: Minimum 30 minutes
-        try {
-            const targetDate = resolveOtEndDate(date, estimatedEndTime);
-            if (!targetDate) {
-                return { valid: false, error: 'Ngày hoặc giờ không hợp lệ' };
-            }
-            const otStart = new Date(`${date}T17:31:00+07:00`);
-            const otEnd = new Date(`${targetDate}T${estimatedEndTime}:00+07:00`);
-            if (isNaN(otStart.getTime()) || isNaN(otEnd.getTime())) {
-                return { valid: false, error: 'Ngày hoặc giờ không hợp lệ' };
-            }
-            const diffMinutes = Math.floor((otEnd - otStart) / 60000);
-
-            if (diffMinutes < 30) {
-                return { valid: false, error: 'Thời gian OT tối thiểu là 30 phút (từ 18:01 trở đi)' };
-            }
-
-            return { valid: true, error: '', otMinutes: diffMinutes };
-        } catch (err) {
-            return { valid: false, error: 'Ngày hoặc giờ không hợp lệ' };
+        if (date === todayStr && endTime <= new Date()) {
+            return {
+                valid: false,
+                error: 'Giờ kết thúc OT phải sau thời điểm hiện tại',
+            };
         }
+
+        if (otMode === OT_MODE_CONTINUOUS) {
+            if (!isCrossMidnightOt(estimatedEndTime) && estimatedEndTime <= '17:31') {
+                return { valid: false, error: 'OT liên tục phải kết thúc sau 17:31 (GMT+7)' };
+            }
+
+            const continuousStart = parseVnDateTime(date, '17:31');
+            const minutes = Math.floor((endTime - continuousStart) / 60000);
+            if (minutes < 30) {
+                return { valid: false, error: 'Thời gian OT tối thiểu là 30 phút' };
+            }
+
+            return {
+                valid: true,
+                error: '',
+                otMinutes: minutes,
+                endOffsetDays: isCrossMidnightOt(estimatedEndTime) ? 1 : 0,
+                otStartOffsetDays: 0,
+            };
+        }
+
+        // SEPARATED mode validations
+        if (date !== todayStr) {
+            return { valid: false, error: 'OT tách rời chỉ hỗ trợ đăng ký cho ngày hiện tại (GMT+7)' };
+        }
+
+        if (!otStartTime) {
+            return { valid: false, error: 'Vui lòng nhập giờ bắt đầu OT tách rời' };
+        }
+
+        const startDate = resolveOtDate(date, otStartTime);
+        const startTime = parseVnDateTime(startDate, otStartTime);
+        if (!startTime) {
+            return { valid: false, error: 'Giờ bắt đầu OT không hợp lệ' };
+        }
+
+        const threshold = parseVnDateTime(date, '17:31');
+        if (startTime <= threshold) {
+            return { valid: false, error: 'Giờ bắt đầu OT tách rời phải sau 17:31 (GMT+7)' };
+        }
+
+        if (endTime <= startTime) {
+            return { valid: false, error: 'Giờ kết thúc phải sau giờ bắt đầu OT' };
+        }
+
+        const minutes = Math.floor((endTime - startTime) / 60000);
+        if (minutes < 30) {
+            return { valid: false, error: 'Thời gian OT tối thiểu là 30 phút' };
+        }
+
+        if (isCrossMidnightOt(otStartTime) && otStartTime >= OT_CROSS_MIDNIGHT_CUTOFF) {
+            return { valid: false, error: 'Giờ bắt đầu OT qua đêm phải trước 08:00' };
+        }
+
+        if (isCrossMidnightOt(estimatedEndTime) && estimatedEndTime >= OT_CROSS_MIDNIGHT_CUTOFF) {
+            return { valid: false, error: 'Giờ kết thúc OT qua đêm phải trước 08:00' };
+        }
+
+        return {
+            valid: true,
+            error: '',
+            otMinutes: minutes,
+            endOffsetDays: isCrossMidnightOt(estimatedEndTime) ? 1 : 0,
+            otStartOffsetDays: isCrossMidnightOt(otStartTime) ? 1 : 0,
+        };
     };
 
-    // Handle form submit — validate then show confirm modal
     const handleSubmit = (e) => {
         e.preventDefault();
-
-        // Double-submit guard
         if (submitting) return;
 
         setFormError('');
@@ -141,47 +225,50 @@ export default function OtRequestForm({
         setModalError('');
 
         const validation = validateOtRequest();
-
         if (!validation.valid) {
             setFormError(validation.error);
             return;
         }
 
-        // Clear form error before opening modal
-        setFormError('');
-
-        // Show confirmation modal (J2 requirement)
         setEstimatedOtMinutes(validation.otMinutes);
         setShowOtConfirmModal(true);
     };
 
-    /**
-     * Handle OT confirmation from modal.
-     * REUSES buildIsoTimestamp helper.
-     */
     const handleConfirmOtRequest = async () => {
         setSubmitting(true);
         setModalError('');
 
         try {
-            const isCrossDay = isCrossMidnightOt(formData.estimatedEndTime);
+            const endOffsetDays = isCrossMidnightOt(formData.estimatedEndTime) ? 1 : 0;
+            const separatedStartOffsetDays =
+                otMode === OT_MODE_SEPARATED && isCrossMidnightOt(formData.otStartTime)
+                    ? 1
+                    : 0;
+
             const payload = {
                 type: 'OT_REQUEST',
                 date: formData.date,
+                otMode,
                 estimatedEndTime: buildIsoTimestamp(
                     formData.date,
                     formData.estimatedEndTime,
-                    isCrossDay ? 1 : 0
+                    endOffsetDays
                 ),
                 reason: formData.reason.trim(),
             };
 
+            if (otMode === OT_MODE_SEPARATED) {
+                payload.otStartTime = buildIsoTimestamp(
+                    formData.date,
+                    formData.otStartTime,
+                    separatedStartOffsetDays
+                );
+            }
+
             await createRequest(payload);
 
             setFormSuccess('Đã gửi yêu cầu OT thành công!');
-
             setShowOtConfirmModal(false);
-
             onSuccess?.();
         } catch (err) {
             const errorMsg = err.response?.data?.message || 'Không thể tạo yêu cầu OT';
@@ -191,8 +278,10 @@ export default function OtRequestForm({
         }
     };
 
+    const preview = getPreviewRange();
     const isCrossDayOt = isCrossMidnightOt(formData.estimatedEndTime);
     const nextDayDisplay = isCrossDayOt && formData.date ? getNextDayDisplay(formData.date) : '';
+    const isSeparated = otMode === OT_MODE_SEPARATED;
 
     return (
         <>
@@ -205,7 +294,20 @@ export default function OtRequestForm({
                         <h3 className="font-semibold text-purple-900">Đăng ký làm thêm giờ (OT)</h3>
                     </div>
 
-                    {/* Date Field */}
+                    <div>
+                        <Label htmlFor="ot-mode" value="Loại OT *" />
+                        <Select
+                            id="ot-mode"
+                            name="otMode"
+                            value={otMode}
+                            onChange={handleInputChange}
+                            required
+                        >
+                            <option value={OT_MODE_CONTINUOUS}>Làm thêm liên tục</option>
+                            <option value={OT_MODE_SEPARATED}>Phiên tách rời</option>
+                        </Select>
+                    </div>
+
                     <div>
                         <Label htmlFor="ot-date" value="Ngày làm OT *" />
                         <TextInput
@@ -218,13 +320,32 @@ export default function OtRequestForm({
                             required
                         />
                         <p className="text-xs text-gray-600 mt-1">
-                            Chỉ có thể đăng ký cho ngày hôm nay hoặc tương lai
+                            {isSeparated
+                                ? 'OT tách rời chỉ hỗ trợ ngày hiện tại (GMT+7), sau khi đã check-in và check-out ca chính'
+                                : 'OT liên tục hỗ trợ ngày hiện tại hoặc tương lai'}
                         </p>
                     </div>
 
-                    {/* Estimated End Time */}
+                    {isSeparated && (
+                        <div>
+                            <Label htmlFor="ot-start-time" value="Giờ bắt đầu OT *" />
+                            <TextInput
+                                id="ot-start-time"
+                                name="otStartTime"
+                                type="time"
+                                value={formData.otStartTime || ''}
+                                onChange={handleInputChange}
+                                required={isSeparated}
+                            />
+                            <div className="text-xs text-gray-600 mt-1 space-y-1">
+                                <p>Giờ bắt đầu phải sau 17:31 (GMT+7)</p>
+                                <p>Giờ 00:00-07:59 sẽ được tính là ngày hôm sau</p>
+                            </div>
+                        </div>
+                    )}
+
                     <div>
-                        <Label htmlFor="ot-time" value="Dự kiến giờ về *" />
+                        <Label htmlFor="ot-time" value="Giờ kết thúc OT *" />
                         <TextInput
                             id="ot-time"
                             name="estimatedEndTime"
@@ -234,51 +355,29 @@ export default function OtRequestForm({
                             required
                         />
                         <div className="text-xs text-gray-600 mt-1 space-y-1">
-                            <p>Giờ cùng ngày phải sau 17:31 (hết giờ làm việc)</p>
+                            {!isSeparated && <p>OT liên tục cùng ngày phải kết thúc sau 17:31</p>}
                             <p>Giờ 00:00-07:59 sẽ được tính là ngày hôm sau</p>
-                            <p>Tối thiểu 30 phút OT (tức là từ 18:01 trở đi)</p>
+                            <p>Tối thiểu 30 phút</p>
                         </div>
                         {formData.date && isCrossDayOt && (
                             <p className="text-xs text-indigo-600 mt-1">
-                                ⏰ Giờ về sẽ tính là ngày hôm sau ({nextDayDisplay})
+                                Giờ kết thúc sẽ tính là ngày hôm sau ({nextDayDisplay})
                             </p>
                         )}
                     </div>
 
-                    {/* Real-time OT Duration Display */}
-                    {formData.date && formData.estimatedEndTime && (() => {
-                        try {
-                            const targetDate = resolveOtEndDate(formData.date, formData.estimatedEndTime);
-                            if (!targetDate) return null;
-                            const otStart = new Date(`${formData.date}T17:31:00+07:00`);
-                            const otEnd = new Date(`${targetDate}T${formData.estimatedEndTime}:00+07:00`);
-                            if (isNaN(otStart.getTime()) || isNaN(otEnd.getTime())) return null;
-                            const minutes = Math.floor((otEnd - otStart) / 60000);
+                    {formData.date && formData.estimatedEndTime && preview.minutes > 0 && (
+                        <Alert color={preview.minutes >= 30 ? 'success' : 'warning'}>
+                            <div className="flex items-center">
+                                <span className="font-semibold mr-2">Thời gian OT dự kiến:</span>
+                                <span className="text-lg">{formatMinutes(preview.minutes)}</span>
+                                {preview.minutes < 30 && (
+                                    <span className="ml-2 text-sm">(Tối thiểu 30 phút)</span>
+                                )}
+                            </div>
+                        </Alert>
+                    )}
 
-                            if (minutes > 0) {
-                                const hours = Math.floor(minutes / 60);
-                                const mins = minutes % 60;
-                                const timeStr = hours > 0 ? `${hours} giờ ${mins} phút` : `${mins} phút`;
-
-                                return (
-                                    <Alert color={minutes >= 30 ? 'success' : 'warning'}>
-                                        <div className="flex items-center">
-                                            <span className="font-semibold mr-2">Thời gian OT dự kiến:</span>
-                                            <span className="text-lg">{timeStr}</span>
-                                            {minutes < 30 && (
-                                                <span className="ml-2 text-sm">(Tối thiểu 30 phút)</span>
-                                            )}
-                                        </div>
-                                    </Alert>
-                                );
-                            }
-                        } catch (e) {
-                            // Invalid date/time
-                        }
-                        return null;
-                    })()}
-
-                    {/* Reason */}
                     <div>
                         <Label htmlFor="ot-reason" value="Lý do *" />
                         <Textarea
@@ -292,27 +391,33 @@ export default function OtRequestForm({
                         />
                     </div>
 
-                    {/* Notice */}
                     <Alert color="warning">
                         <div className="text-sm">
                             <p className="font-semibold mb-1">Lưu ý:</p>
                             <ul className="list-disc list-inside space-y-1 text-xs">
-                                <li>Phải có approval từ manager trước khi checkout</li>
-                                <li>Nếu không có approval: giờ làm tính đến 17:30, OT = 0</li>
-                                <li>Có thể hủy nếu còn ở trạng thái PENDING</li>
+                                {isSeparated ? (
+                                    <>
+                                        <li>Phải hoàn tất check-in và check-out ca chính trước khi đăng ký</li>
+                                        <li>Giờ bắt đầu OT phải sau thời điểm check-out ca chính</li>
+                                        <li>Yêu cầu vẫn cần manager phê duyệt</li>
+                                    </>
+                                ) : (
+                                    <>
+                                        <li>Phải có approval từ manager trước khi checkout</li>
+                                        <li>Nếu không có approval: giờ làm tính đến 17:30, OT = 0</li>
+                                    </>
+                                )}
                             </ul>
                         </div>
                     </Alert>
                 </div>
 
-                {/* Submit */}
                 <Button type="submit" disabled={submitting} color="cyan">
                     {submitting ? <Spinner size="sm" className="mr-2" /> : <HiPlus className="mr-2" />}
                     Tạo yêu cầu
                 </Button>
             </form>
 
-            {/* OT Confirmation Modal */}
             <Modal
                 show={showOtConfirmModal}
                 onClose={() => !submitting && setShowOtConfirmModal(false)}
@@ -329,7 +434,6 @@ export default function OtRequestForm({
 
                 <Modal.Body>
                     <div className="space-y-4">
-                        {/* OT Info */}
                         <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
                             <h3 className="font-semibold text-purple-900 mb-3">
                                 Thông tin đăng ký OT
@@ -337,14 +441,31 @@ export default function OtRequestForm({
 
                             <div className="space-y-2">
                                 <div className="flex justify-between">
+                                    <span className="text-gray-600">Loại OT:</span>
+                                    <span className="font-medium">
+                                        {isSeparated ? 'Phiên tách rời' : 'Làm thêm liên tục'}
+                                    </span>
+                                </div>
+
+                                <div className="flex justify-between">
                                     <span className="text-gray-600">Ngày:</span>
                                     <span className="font-medium">
                                         {new Date(formData.date + 'T00:00:00+07:00').toLocaleDateString('vi-VN')}
                                     </span>
                                 </div>
 
+                                {isSeparated && (
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-600">Bắt đầu OT:</span>
+                                        <span className="font-medium">
+                                            {formData.otStartTime}
+                                            {isCrossMidnightOt(formData.otStartTime) && nextDayDisplay && ` (ngày ${nextDayDisplay})`}
+                                        </span>
+                                    </div>
+                                )}
+
                                 <div className="flex justify-between">
-                                    <span className="text-gray-600">Dự kiến về:</span>
+                                    <span className="text-gray-600">Kết thúc OT:</span>
                                     <span className="font-medium">
                                         {formData.estimatedEndTime}
                                         {isCrossDayOt && nextDayDisplay && ` (ngày ${nextDayDisplay})`}
@@ -354,8 +475,7 @@ export default function OtRequestForm({
                                 <div className="flex justify-between bg-green-50 rounded p-2">
                                     <span className="text-gray-600">Thời gian OT:</span>
                                     <span className="font-bold text-green-600">
-                                        {Math.floor(estimatedOtMinutes / 60) > 0 && `${Math.floor(estimatedOtMinutes / 60)} giờ `}
-                                        {estimatedOtMinutes % 60} phút
+                                        {formatMinutes(estimatedOtMinutes)}
                                     </span>
                                 </div>
 
@@ -368,20 +488,22 @@ export default function OtRequestForm({
                             </div>
                         </div>
 
-                        {/* Error Display */}
                         {modalError && (
                             <Alert color="failure">
                                 {modalError}
                             </Alert>
                         )}
 
-                        {/* Warning */}
                         <Alert color="warning">
                             <div className="text-sm">
                                 <p className="font-semibold mb-1">Lưu ý:</p>
                                 <ul className="list-disc list-inside space-y-1 text-xs">
-                                    <li>Yêu cầu OT cần manager phê duyệt trước checkout</li>
-                                    <li>Nếu không có phê duyệt: giờ làm tính đến 17:30, OT = 0</li>
+                                    <li>Yêu cầu OT cần quản lý phê duyệt</li>
+                                    {isSeparated ? (
+                                        <li>OT tách rời chỉ hợp lệ sau khi đã hoàn tất ca chính</li>
+                                    ) : (
+                                        <li>OT liên tục cần tạo trước khi checkout</li>
+                                    )}
                                 </ul>
                             </div>
                         </Alert>
