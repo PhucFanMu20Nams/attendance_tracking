@@ -3,6 +3,14 @@ import { Card, Button, Badge, Spinner, Alert } from 'flowbite-react';
 import { HiClock, HiCheckCircle, HiXCircle } from 'react-icons/hi';
 import client from '../api/client';
 
+const ATTENDANCE_SOURCE = {
+    TODAY: 'TODAY',
+    CROSS_MIDNIGHT_APPROVED_OT: 'CROSS_MIDNIGHT_APPROVED_OT',
+};
+
+const isAbortError = (err) =>
+    err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED';
+
 /**
  * DashboardPage: Main page showing today's attendance status + check-in/out buttons.
  *
@@ -14,10 +22,12 @@ import client from '../api/client';
  * - Display check-in/out times when available
  */
 export default function DashboardPage() {
-    const [todayAttendance, setTodayAttendance] = useState(null);
+    const [effectiveAttendance, setEffectiveAttendance] = useState(null);
+    const [attendanceSource, setAttendanceSource] = useState(null);
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState(false);
     const [error, setError] = useState('');
+    const [successMessage, setSuccessMessage] = useState('');
 
     // Get today in GMT+7 format "YYYY-MM-DD"
     const today = new Date().toLocaleDateString('sv-SE', {
@@ -26,43 +36,101 @@ export default function DashboardPage() {
 
     const currentMonth = today.slice(0, 7); // "YYYY-MM"
 
+    const findAttendanceByDate = useCallback((items, dateKey) => {
+        if (!Array.isArray(items)) return null;
+        return items.find((item) => item?.date === dateKey) || null;
+    }, []);
+
+    const fetchMonthlyAttendance = useCallback(async (month, signal) => {
+        const config = signal ? { signal } : undefined;
+        const res = await client.get(`/attendance/me?month=${month}`, config);
+        return Array.isArray(res.data?.items) ? res.data.items : [];
+    }, []);
+
     // Fetch attendance with AbortController to avoid race conditions
     // showLoading: true for initial load (show spinner), false for action refetch (no spinner)
-    const fetchTodayAttendance = useCallback(async (signal, showLoading = true) => {
+    const fetchDashboardAttendance = useCallback(async (signal, showLoading = true) => {
         if (showLoading) setLoading(true);
         setError('');
         try {
-            const config = signal ? { signal } : undefined;
-            const res = await client.get(`/attendance/me?month=${currentMonth}`, config);
-            // Defensive: ensure items is array before find
-            const items = Array.isArray(res.data?.items) ? res.data.items : [];
-            const todayRecord = items.find((item) => item.date === today);
-            setTodayAttendance(todayRecord || null);
+            const currentMonthItems = await fetchMonthlyAttendance(currentMonth, signal);
+            const todayRecord = findAttendanceByDate(currentMonthItems, today);
+
+            let nextEffectiveAttendance = todayRecord || null;
+            let nextAttendanceSource = todayRecord ? ATTENDANCE_SOURCE.TODAY : null;
+
+            const hasTodayCheckIn = Boolean(todayRecord?.checkInAt);
+            const hasTodayCheckOut = Boolean(todayRecord?.checkOutAt);
+            const shouldCheckOpenSession = Boolean(todayRecord) && !hasTodayCheckIn && !hasTodayCheckOut;
+
+            if (shouldCheckOpenSession) {
+                const config = signal ? { signal } : undefined;
+                try {
+                    const openSessionRes = await client.get('/attendance/open-session', config);
+                    const openSession = openSessionRes.data?.openSession || null;
+                    const isPreviousDayOpenSession =
+                        typeof openSession?.date === 'string' &&
+                        openSession.date < today &&
+                        Boolean(openSession?.checkInAt);
+
+                    if (isPreviousDayOpenSession) {
+                        let openSessionAttendance = findAttendanceByDate(currentMonthItems, openSession.date);
+
+                        if (!openSessionAttendance) {
+                            const openSessionMonth = openSession.date.slice(0, 7);
+                            if (openSessionMonth !== currentMonth) {
+                                try {
+                                    const openSessionMonthItems = await fetchMonthlyAttendance(openSessionMonth, signal);
+                                    openSessionAttendance = findAttendanceByDate(openSessionMonthItems, openSession.date);
+                                } catch (openMonthErr) {
+                                    if (isAbortError(openMonthErr)) return;
+                                }
+                            }
+                        }
+
+                        if (openSessionAttendance?.otApproved === true && !openSessionAttendance?.checkOutAt) {
+                            nextEffectiveAttendance = {
+                                ...openSessionAttendance,
+                                checkInAt: openSession.checkInAt || openSessionAttendance.checkInAt,
+                                checkOutAt: null,
+                            };
+                            nextAttendanceSource = ATTENDANCE_SOURCE.CROSS_MIDNIGHT_APPROVED_OT;
+                        }
+                    }
+                } catch (openSessionErr) {
+                    if (isAbortError(openSessionErr)) return;
+                    // Fallback to default today-only behavior.
+                }
+            }
+
+            setEffectiveAttendance(nextEffectiveAttendance);
+            setAttendanceSource(nextAttendanceSource);
         } catch (err) {
             // Ignore abort errors
-            if (err.name === 'CanceledError' || err.name === 'AbortError' || err?.code === 'ERR_CANCELED') return;
+            if (isAbortError(err)) return;
             setError(err.response?.data?.message || 'Failed to load attendance');
         } finally {
             // Guard: don't setState after abort/unmount
             if (signal?.aborted) return;
             if (showLoading) setLoading(false);
         }
-    }, [currentMonth, today]);
+    }, [currentMonth, today, fetchMonthlyAttendance, findAttendanceByDate]);
 
     // Fetch on mount with cleanup
     useEffect(() => {
         const controller = new AbortController();
-        fetchTodayAttendance(controller.signal, true);
+        fetchDashboardAttendance(controller.signal, true);
         return () => controller.abort();
-    }, [fetchTodayAttendance]);
+    }, [fetchDashboardAttendance]);
 
     const handleCheckIn = async () => {
         setActionLoading(true);
         setError('');
+        setSuccessMessage('');
         try {
             await client.post('/attendance/check-in');
             // Refetch without showing spinner (smooth UX)
-            await fetchTodayAttendance(undefined, false);
+            await fetchDashboardAttendance(undefined, false);
         } catch (err) {
             setError(err.response?.data?.message || 'Check-in failed');
         } finally {
@@ -73,10 +141,15 @@ export default function DashboardPage() {
     const handleCheckOut = async () => {
         setActionLoading(true);
         setError('');
+        setSuccessMessage('');
+        const isCrossMidnightApprovedOt = attendanceSource === ATTENDANCE_SOURCE.CROSS_MIDNIGHT_APPROVED_OT;
         try {
             await client.post('/attendance/check-out');
+            if (isCrossMidnightApprovedOt) {
+                setSuccessMessage('Đã check-out ca OT ngày trước');
+            }
             // Refetch without showing spinner (smooth UX)
-            await fetchTodayAttendance(undefined, false);
+            await fetchDashboardAttendance(undefined, false);
         } catch (err) {
             setError(err.response?.data?.message || 'Check-out failed');
         } finally {
@@ -85,8 +158,8 @@ export default function DashboardPage() {
     };
 
     // Determine display state
-    const hasCheckedIn = Boolean(todayAttendance?.checkInAt);
-    const hasCheckedOut = Boolean(todayAttendance?.checkOutAt);
+    const hasCheckedIn = Boolean(effectiveAttendance?.checkInAt);
+    const hasCheckedOut = Boolean(effectiveAttendance?.checkOutAt);
 
     // Format time for display (GMT+7)
     const formatTime = (isoString) => {
@@ -126,6 +199,11 @@ export default function DashboardPage() {
             </Card>
 
             {/* Error Alert */}
+            {successMessage && (
+                <Alert color="success" className="mb-4" onDismiss={() => setSuccessMessage('')}>
+                    {successMessage}
+                </Alert>
+            )}
             {error && (
                 <Alert color="failure" className="mb-4" onDismiss={() => setError('')}>
                     {error}
@@ -165,7 +243,7 @@ export default function DashboardPage() {
                                     <span>Check-in</span>
                                 </div>
                                 <p className="text-2xl font-bold text-gray-900">
-                                    {formatTime(todayAttendance?.checkInAt)}
+                                    {formatTime(effectiveAttendance?.checkInAt)}
                                 </p>
                             </div>
                             <div className="bg-primary-50 rounded-lg p-4 border border-primary-100">
@@ -174,7 +252,7 @@ export default function DashboardPage() {
                                     <span>Check-out</span>
                                 </div>
                                 <p className="text-2xl font-bold text-gray-900">
-                                    {formatTime(todayAttendance?.checkOutAt)}
+                                    {formatTime(effectiveAttendance?.checkOutAt)}
                                 </p>
                             </div>
                         </div>
@@ -185,19 +263,19 @@ export default function DashboardPage() {
                                 <div className="bg-yellow-50 rounded p-2">
                                     <p className="text-yellow-600">Đi muộn</p>
                                     <p className="font-semibold">
-                                        {todayAttendance?.lateMinutes || 0} phút
+                                        {effectiveAttendance?.lateMinutes || 0} phút
                                     </p>
                                 </div>
                                 <div className="bg-blue-50 rounded p-2">
                                     <p className="text-blue-600">Làm việc</p>
                                     <p className="font-semibold">
-                                        {todayAttendance?.workMinutes || 0} phút
+                                        {effectiveAttendance?.workMinutes || 0} phút
                                     </p>
                                 </div>
                                 <div className="bg-green-50 rounded p-2">
                                     <p className="text-green-600">OT</p>
                                     <p className="font-semibold">
-                                        {todayAttendance?.otMinutes || 0} phút
+                                        {effectiveAttendance?.otMinutes || 0} phút
                                     </p>
                                 </div>
                             </div>
