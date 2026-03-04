@@ -1,4 +1,4 @@
-# Rules — Attendance Logic (v2.7)
+# Rules — Attendance Logic (v2.8)
 
 Timezone: Asia/Ho_Chi_Minh (GMT+7)  
 All dateKey calculations MUST use GMT+7.
@@ -1195,3 +1195,170 @@ Request.find({
 - FORGOT_CHECKOUT rules (§12) OVERRIDE general ADJUST_TIME rules (§5) when applicable
 - Weekend/holiday restriction bypassed for FORGOT_CHECKOUT (special case)
 - Auto-close scheduler (§11) is prerequisite for FORGOT_CHECKOUT workflow
+
+---
+
+## 13) Dashboard Cross-Midnight Approved OT Checkout Rules (NEW v2.8)
+
+### 13.1 Overview
+**Purpose:** When a user has an open attendance session from the previous day with approved OT (`otApproved=true`), the Dashboard on the next day must display a **Check-out** button so the user can close their cross-midnight OT shift.
+
+**Design Decision:** Option 1A + 2A
+- **1A:** No new backend endpoint. Reuse `GET /attendance/open-session` + `GET /attendance/me` to determine `otApproved` status.
+- **2A:** After cross-midnight checkout, main status resets to `Chưa check-in`. A success alert shows: `Đã check-out ca OT ngày trước`.
+
+**Scope:**
+- Frontend-only change (DashboardPage.jsx).
+- No backend API, schema, or contract changes.
+- Only affects sessions where `otApproved === true`.
+- OT not approved (`otApproved=false`) retains existing behavior.
+
+---
+
+### 13.2 Data Flow
+
+**Step 1: Fetch open session**
+```
+GET /api/attendance/open-session
+→ openSessions[0] (if any open session with checkOutAt=null)
+```
+
+**Step 2: Determine effective attendance**
+```javascript
+const todayKey = getTodayKey(); // YYYY-MM-DD in GMT+7
+const openSession = openSessions[0]; // from open-session API
+
+if (todayAttendance) {
+  // Normal flow: today has its own attendance record
+  effectiveAttendance = todayAttendance;
+  attendanceSource = 'NORMAL';
+} else if (openSession && openSession.date < todayKey) {
+  // Cross-midnight: open session from a previous day
+  const record = findAttendanceRecord(openSession.date);
+  if (record && record.otApproved === true) {
+    effectiveAttendance = record; // or openSession data
+    attendanceSource = 'CROSS_MIDNIGHT_APPROVED_OT';
+  } else {
+    // OT not approved — fall back to normal (Check-in)
+    effectiveAttendance = null;
+    attendanceSource = 'NORMAL';
+  }
+} else {
+  // No open session or same-day session
+  effectiveAttendance = todayAttendance; // may be null
+  attendanceSource = 'NORMAL';
+}
+```
+
+**Step 3: Validate otApproved across month boundary**
+```javascript
+function findAttendanceRecord(dateKey) {
+  // 1. Try current month items (already fetched)
+  const record = currentMonthItems.find(a => a.date === dateKey);
+  if (record) return record;
+
+  // 2. If dateKey is in a different month, fetch that month
+  const openSessionMonth = dateKey.substring(0, 7); // YYYY-MM
+  const currentMonth = todayKey.substring(0, 7);
+  if (openSessionMonth !== currentMonth) {
+    const prevMonthData = await fetchAttendance(openSessionMonth);
+    return prevMonthData.items.find(a => a.date === dateKey);
+  }
+  return null;
+}
+```
+
+---
+
+### 13.3 UI Button Logic
+
+| Condition | Button | Label |
+|-----------|--------|-------|
+| `effectiveAttendance.checkInAt && !effectiveAttendance.checkOutAt` && `attendanceSource === 'CROSS_MIDNIGHT_APPROVED_OT'` | Check-out | `Check-out` |
+| `effectiveAttendance.checkInAt && !effectiveAttendance.checkOutAt` && `attendanceSource === 'NORMAL'` | Check-out | `Check-out` (same-day working) |
+| `effectiveAttendance.checkInAt && effectiveAttendance.checkOutAt` | Done | `Đã check-out` |
+| No valid effective attendance | Check-in | `Check-in` |
+
+---
+
+### 13.4 Checkout Handler
+
+```javascript
+async function handleCheckOut() {
+  await api.post('/attendance/check-out');
+
+  if (attendanceSource === 'CROSS_MIDNIGHT_APPROVED_OT') {
+    setSuccessMessage('Đã check-out ca OT ngày trước');
+  }
+
+  // Refetch all data
+  await refetchData();
+  // After refetch: todayAttendance = null → status = 'Chưa check-in' (Option 2A)
+  // Success message persists until next action or reload
+}
+```
+
+---
+
+### 13.5 Success Feedback Lifecycle
+
+- **Display:** Alert success dismissible (same style as existing alerts).
+- **Text:** `Đã check-out ca OT ngày trước` (Vietnamese).
+- **Clear conditions:**
+  - User performs another attendance action (check-in).
+  - Page reload / re-mount.
+  - Manual dismiss.
+- **Does NOT block** the main status display (`Chưa check-in`).
+
+---
+
+### 13.6 Fail-Safe Rules
+
+| Failure | Behavior |
+|---------|----------|
+| `GET /attendance/open-session` fails | Fall back to existing behavior (no cross-midnight check) |
+| Cross-month `GET /attendance/me?month=...` fails | Fall back to existing behavior |
+| `otApproved` field missing on record | Treat as `false` — no cross-midnight checkout UI |
+| `POST /attendance/check-out` fails | Show error alert as usual; no state change |
+
+**Principle:** No new blocking errors. All failures degrade gracefully to pre-v2.8 behavior.
+
+---
+
+### 13.7 Test Scenarios
+
+| # | Scenario | Setup | Expected |
+|---|----------|-------|----------|
+| 1 | Approved cross-midnight shows Check-out | `openSession` from yesterday, `otApproved=true` | Check-out button visible |
+| 2 | Checkout success message | Click Check-out from scenario 1 | `POST /check-out` called; after refetch: status=`Chưa check-in` + alert `Đã check-out ca OT ngày trước` |
+| 3 | Unapproved OT unchanged | `openSession` from yesterday, `otApproved=false` | Check-in button (no Check-out) |
+| 4 | Month boundary approved | `openSession.date` in prev month, fetch prev month returns `otApproved=true` | Check-out button visible |
+| 5 | Same-day working (regression) | User checked in today, no checkout yet | Check-out button (normal flow) |
+| 6 | Done state (regression) | User checked in + out today | `Đã check-out` status |
+| 7 | Not checked-in (regression) | No attendance today, no open session | Check-in button |
+| 8 | API error state (regression) | API call fails | Error alert, no crash |
+
+---
+
+### 13.8 Assumptions
+
+1. `otApproved` on the attendance record is the single source-of-truth for OT approval.
+2. Timezone for all date comparisons is `Asia/Ho_Chi_Minh` (GMT+7).
+3. Success message uses Vietnamese text exactly: `Đã check-out ca OT ngày trước`.
+4. No changes to existing copy/status text outside the scope of this feature.
+5. `openSessions[0]` is sufficient (user can only have 1 open session at a time per business rule).
+
+---
+
+### 13.9 Priority & Conflict Resolution
+
+**Document Hierarchy:**
+1. This section (§13) - Dashboard Cross-Midnight Approved OT Checkout (v2.8)
+2. Section §9 - Cross-midnight OT rules (checkout timing)
+3. Section §10.5 - OT Strict Mode (`otApproved` gating)
+4. Section §11 - Auto-Close Scheduler (may have already auto-closed the session)
+
+**In Case of Conflict:**
+- §13 rules are **UI-only** and do not override backend checkout logic (§9).
+- If both auto-close (§11) and cross-midnight approved OT (§13) apply, auto-close takes precedence (session already closed by system).
+- `otApproved` gating (§10.5) remains authoritative: without `otApproved=true`, cross-midnight checkout UI is **never** shown.
