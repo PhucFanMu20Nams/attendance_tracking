@@ -89,6 +89,19 @@ export default function PendingRequestsTable({
         return `${time} (${formatDate(endDateKey)})`;
     };
 
+    const formatOtPreviewTime = (isoString, requestDate) => {
+        if (!isoString) return '--:--';
+        return formatOtEndTime(isoString, requestDate);
+    };
+
+    const formatOtPreviewDuration = (preview) => {
+        const minutes = Number(preview?.minutes || 0);
+        if (!Number.isFinite(minutes) || minutes <= 0) return null;
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return `${hours}h ${mins}m`;
+    };
+
     const getLeaveTypeLabel = (type) => {
         const labels = {
             ANNUAL: 'Phép năm',
@@ -183,31 +196,34 @@ export default function PendingRequestsTable({
                                                             {formatOtEndTime(req.estimatedEndTime, req.date)}
                                                         </span>
                                                     </div>
-                                                    {(() => {
-                                                        try {
-                                                            const otStart = new Date(`${req.date}T17:31:00+07:00`);
-                                                            const otEnd = new Date(req.estimatedEndTime);
-                                                            const diffMinutes = Math.floor((otEnd - otStart) / 60000);
-                                                            if (diffMinutes > 0) {
-                                                                const hours = Math.floor(diffMinutes / 60);
-                                                                const minutes = diffMinutes % 60;
-                                                                return (
-                                                                    <div>
-                                                                        <span className="text-gray-600">Thời lượng dự kiến:</span>
-                                                                        <span className="ml-2 font-bold text-purple-600">
-                                                                            {hours}h {minutes}m
-                                                                        </span>
-                                                                    </div>
-                                                                );
-                                                            }
-                                                        } catch (err) {
-                                                            console.warn('Failed to calculate OT duration:', err);
-                                                        }
-                                                        return null;
-                                                    })()}
+                                                    <div>
+                                                        <span className="text-gray-600">Loại OT:</span>
+                                                        <span className="ml-2 font-medium">
+                                                            {req.otMode === 'SEPARATED' ? 'Phiên tách rời' : 'Liên tục'}
+                                                        </span>
+                                                    </div>
+                                                    {req.otMode === 'SEPARATED' && (
+                                                        <div>
+                                                            <span className="text-gray-600">Bắt đầu OT:</span>
+                                                            <span className="ml-2 font-medium">
+                                                                {formatOtPreviewTime(req.otPreview?.startTime || req.otStartTime, req.date)}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    {formatOtPreviewDuration(req.otPreview) && (
+                                                        <div>
+                                                            <span className="text-gray-600">Thời lượng dự kiến:</span>
+                                                            <span className="ml-2 font-bold text-purple-600">
+                                                                {formatOtPreviewDuration(req.otPreview)}
+                                                            </span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                                 <div className="text-xs text-purple-700 bg-purple-50 p-2 rounded border border-purple-200">
-                                                    <strong>Lưu ý quản lý:</strong> Nhân viên cần approval trước checkout để được tính OT
+                                                    <strong>Lưu ý quản lý:</strong>{' '}
+                                                    {req.otMode === 'SEPARATED'
+                                                        ? 'Phiên tách rời yêu cầu nhân viên đã hoàn tất ca chính trước khi đăng ký.'
+                                                        : 'Nhân viên cần approval trước checkout để được tính OT.'}
                                                 </div>
                                             </div>
                                         ) : (
